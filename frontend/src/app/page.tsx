@@ -27,6 +27,7 @@ interface DownloadStatus {
 export default function JarvisAdvancedUI() {
   // Chat States
   const [messages, setMessages] = useState<Message[]>([]);
+  const hasLoadedRef = useRef(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -97,6 +98,28 @@ export default function JarvisAdvancedUI() {
       console.error("Error fetching download progress:", err);
     }
   };
+
+  // Load messages from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedMessages = localStorage.getItem('jarvis_chat_messages');
+      if (savedMessages) {
+        try {
+          setMessages(JSON.parse(savedMessages));
+        } catch (e) {
+          console.error("Error loading chat history:", e);
+        }
+      }
+      hasLoadedRef.current = true;
+    }
+  }, []);
+
+  // Save messages to localStorage when they change
+  useEffect(() => {
+    if (typeof window !== 'undefined' && hasLoadedRef.current) {
+      localStorage.setItem('jarvis_chat_messages', JSON.stringify(messages));
+    }
+  }, [messages]);
 
   // Initial load
   useEffect(() => {
@@ -236,9 +259,14 @@ export default function JarvisAdvancedUI() {
     }
   };
 
-  const clearChat = () => {
+  const clearChat = async () => {
     setMessages([]);
     setError({ type: null, message: '' });
+    try {
+      await fetch('http://localhost:8000/api/reset-chat', { method: 'POST' });
+    } catch (err) {
+      console.error("Failed to reset backend chat context:", err);
+    }
   };
 
   const handleSendMessage = async () => {
