@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # १. जार्विस कोअर बॅकएंड (QVAC SDK - LLM + TTS + Memory + Cache)
+  backend:
+    image: node:18-slim
+    container_name: jarvis-core-backend
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    # मॉडेल नसेल तर डाउनलोड करणारी आणि सर्व्हर सुरू करणारी प्रगत कमांड
+    command: >
+      sh -c "
+      apt-get update && apt-get install -y wget &&
+      mkdir -p models &&
+      if [ ! -f models/qwen2.5-7b-instruct-q4_k_m.gguf ]; then
+        echo '⬇️ Qwen-7B Model नाहीये, डाउनलोड सुरू होत आहे... याला इंटरनेट स्पीडनुसार ५-१५ मिनिटे लागू शकतात...';
+        wget -O models/qwen2.5-7b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf;
+        echo '✅ डाउनलोड पूर्ण झाले!';
+      fi &&
+      npm install && node server.js
+      "
+    deploy:
+      resources:
+        limits:
+          memory: 7.5g # Qwen-7B आणि रॅम मॅनेजमेंटसाठी सुरक्षित मेमरी कॅप
+
+  # २. प्रगत फ्रंटएंड युझर इंटरफेस (Next.js + Tailwind)
+  frontend:
+    image: node:18-slim
+    container_name: jarvis-nextjs-ui
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "3000:3000"
+    command: sh -c "npm install && npm run dev"
+    depends_on:
+      - backend
