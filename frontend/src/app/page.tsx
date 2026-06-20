@@ -40,7 +40,7 @@ export default function JarvisAdvancedUI() {
   const [ttsExists, setTtsExists] = useState(false);
 
   // Download URLs & Progress States
-  const [llmUrl, setLlmUrl] = useState('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf');
+  const [llmUrl, setLlmUrl] = useState('https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf');
   const [ttsUrl, setTtsUrl] = useState(''); // Empty by default, user can paste theirs
   const [downloadProgress, setDownloadProgress] = useState<DownloadStatus>({
     llm: { total: 0, downloaded: 0, percent: 0, active: false, error: null },
@@ -200,6 +200,18 @@ export default function JarvisAdvancedUI() {
     }
   };
 
+  // Browser built-in TTS (fallback when no backend TTS model)
+  const speakWithBrowser = (text: string) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel(); // stop any previous speech
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-US';
+    utterance.rate = 0.92;
+    utterance.pitch = 0.75;
+    utterance.volume = 1;
+    window.speechSynthesis.speak(utterance);
+  };
+
   const handlePlayAudio = (messageId: string, audioDataUrl: string) => {
     if (playingAudioId === messageId) {
       audioRef.current?.pause();
@@ -248,6 +260,9 @@ export default function JarvisAdvancedUI() {
 
       if (data.audio) {
         handlePlayAudio(jarvisMessageId, data.audio);
+      } else {
+        // Fallback: use browser's built-in voice if no backend TTS model
+        speakWithBrowser(data.text);
       }
 
     } catch (err: any) {
@@ -375,7 +390,7 @@ export default function JarvisAdvancedUI() {
                   )}
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  हा जार्विसला आवाज देणारा वक्ता आहे. तुमच्या जवळील थेट डाउनलोड लिंक येथे टाका.
+                  हा जार्विसला AI आवाज देतो. <span className="text-cyan-400">TTS नसेल तरी ब्राऊझरचा आवाज वापरला जाईल ✅</span> — डाउनलोड ऐच्छिक आहे.
                 </p>
                 <div className="space-y-1">
                   <label className="text-[10px] text-slate-500">TTS DIRECT DOWNLOAD GGUF URL</label>
@@ -426,10 +441,12 @@ export default function JarvisAdvancedUI() {
           </div>
 
           {/* Initialization Banner */}
-          {llmExists && ttsExists && (
-            <div className="glass-panel p-6 rounded-2xl border border-cyan-500/30 text-center space-y-4 shadow-[0_0_20px_rgba(6,182,212,0.15)] animate-pulse">
+          {llmExists && (
+            <div className="glass-panel p-6 rounded-2xl border border-cyan-500/30 text-center space-y-4 shadow-[0_0_20px_rgba(6,182,212,0.15)]">
               <p className="text-xs text-slate-300">
-                🎉 दोन्ही मॉडेल्स यशस्वीरित्या डाउनलोड झाली आहेत! आता जार्विस मेंदू कार्यान्वित प्रोटोकॉल सुरू करा.
+                {ttsExists 
+                  ? '🎉 दोन्ही मॉडेल्स तयार आहेत! आता जार्विस सुरू करा.'
+                  : '✅ LLM मॉडेल तयार आहे! TTS नसेल तरी ब्राऊझरचा आवाज वापरला जाईल. आता जार्विस सुरू करा.'}
               </p>
               <button
                 onClick={triggerInit}
