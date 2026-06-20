@@ -1,31 +1,26 @@
 import express from 'express';
 import cors from 'cors';
-import crypto from 'crypto';
 import fs from 'fs';
 import https from 'https';
-import { loadModel, completion } from '@qvac/sdk';
+import { getLlama, LlamaChatSession } from 'node-llama-cpp';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// System state
-let llmModelId = null;
-let ttsModelId = null;
-let systemStatus = 'uninitialized'; // 'uninitialized' | 'loading' | 'ready' | 'error'
-let systemErrorMessage = '';
-
-// Conversation Memory
-let conversationHistory = [
-    { role: "system", content: "You are Jarvis, a highly advanced AI assistant. Keep answers concise, short, intelligent and well-formatted using markdown lists or bold text where appropriate." }
-];
-
-// Audio Cache
-const ttsAudioCache = new Map();
-
-// Model file paths
+// Model Paths
 const LLM_PATH = "./models/qwen2.5-7b-instruct-q4_k_m.gguf";
 const TTS_PATH = "./models/supertonic-turbo.gguf";
+
+// Engine instances
+let llama = null;
+let model = null;
+let context = null;
+let chatSession = null;
+
+// System State
+let systemStatus = 'uninitialized';
+let systemErrorMessage = '';
 
 // Download Status Tracker
 const downloadStatus = {
@@ -41,47 +36,41 @@ function checkModelsExist() {
 }
 
 async function initJarvisMinds() {
-    const { llmExists, ttsExists } = checkModelsExist();
-    if (!llmExists || !ttsExists) {
+    const { llmExists } = checkModelsExist();
+    if (!llmExists) {
         systemStatus = 'uninitialized';
-        console.log("⚠️ Models not found. Waiting for downloads via UI...");
+        console.log("⚠️ LLM Model not found. Waiting for download via UI...");
         return;
     }
 
     systemStatus = 'loading';
     systemErrorMessage = '';
-    llmModelId = null;
-    ttsModelId = null;
 
     try {
-        console.log("🔄 Loading Qwen-7B LLM Model on CPU...");
-        llmModelId = await loadModel({
-            modelSrc: LLM_PATH,
-            modelType: "llm",
-            modelConfig: { ctx_size: 2048 }
-        });
-        console.log(`✅ LLM Connected. ID: ${llmModelId}`);
+        console.log("🔄 Initializing llama.cpp engine...");
+        llama = await getLlama();
 
-        // Load TTS model (if supertonic GGUF is available)
-        if (fs.existsSync(TTS_PATH)) {
-            console.log("🔄 Loading TTS Model on CPU...");
-            ttsModelId = await loadModel({
-                modelSrc: TTS_PATH,
-                modelType: "tts"
-            });
-            console.log(`✅ TTS Engine Armed. ID: ${ttsModelId}`);
-        }
+        console.log("🔄 Loading Qwen-7B model on CPU (this takes 1-2 min)...");
+        model = await llama.loadModel({ modelPath: LLM_PATH });
+
+        console.log("✅ Model loaded! Creating context...");
+        context = await model.createContext({ contextSize: 2048 });
+
+        chatSession = new LlamaChatSession({
+            contextSequence: context.getSequence(),
+            systemPrompt: "You are Jarvis, a highly advanced AI assistant. Keep answers concise, intelligent, and well-formatted. Use markdown for lists and bold text where appropriate."
+        });
 
         systemStatus = 'ready';
         console.log("🚀 Jarvis is fully operational!");
     } catch (error) {
-        console.error("❌ Error loading models:", error);
+        console.error("❌ Error loading model:", error);
         systemStatus = 'error';
-        systemErrorMessage = error.message || "Failed to load models.";
+        systemErrorMessage = error.message || "Failed to load model.";
     }
 }
 
-// Auto-initialize if models already exist
+// Auto-initialize on startup
 initJarvisMinds();
 
 // --- Download helpers with redirect support ---
@@ -105,7 +94,8 @@ function followRedirectsAndDownload(url, dest, type, onSuccess, onError) {
             downloadedBytes += chunk.length;
             fileStream.write(chunk);
             downloadStatus[type].downloaded = downloadedBytes;
-            downloadStatus[type].percent = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
+            downloadStatus[type].percent = totalBytes > 0
+                ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
         });
 
         response.on('end', () => {
@@ -120,9 +110,7 @@ function followRedirectsAndDownload(url, dest, type, onSuccess, onError) {
         });
     });
 
-    request.on('error', (err) => {
-        onError(err);
-    });
+    request.on('error', (err) => onError(err));
 }
 
 // --- API ENDPOINTS ---
@@ -134,45 +122,36 @@ app.get('/api/system/status', (req, res) => {
         status: systemStatus,
         error: systemErrorMessage,
         llmExists,
-        ttsExists,
-        historyCount: conversationHistory.length - 1
+        ttsExists
     });
 });
 
 // Start model download
 app.post('/api/download', (req, res) => {
     const { type, url } = req.body;
-
     if (type !== 'llm' && type !== 'tts') {
-        return res.status(400).json({ error: "Invalid model type. Use 'llm' or 'tts'." });
+        return res.status(400).json({ error: "Invalid type. Use 'llm' or 'tts'." });
     }
-    if (!url) {
-        return res.status(400).json({ error: "Download URL is required." });
-    }
-    if (downloadStatus[type].active) {
-        return res.status(400).json({ error: "Download already in progress." });
-    }
+    if (!url) return res.status(400).json({ error: "Download URL required." });
+    if (downloadStatus[type].active) return res.status(400).json({ error: "Download already in progress." });
 
     fs.mkdirSync('./models', { recursive: true });
     const destPath = type === 'llm' ? LLM_PATH : TTS_PATH;
 
     downloadStatus[type] = { total: 0, downloaded: 0, percent: 0, active: true, error: null };
 
-    console.log(`⬇️ Starting ${type} model download from ${url}...`);
+    console.log(`⬇️ Starting ${type.toUpperCase()} download from: ${url}`);
 
-    followRedirectsAndDownload(
-        url,
-        destPath,
-        type,
+    followRedirectsAndDownload(url, destPath, type,
         () => {
             downloadStatus[type].active = false;
             downloadStatus[type].percent = 100;
-            console.log(`✅ ${type} model downloaded!`);
+            console.log(`✅ ${type.toUpperCase()} model downloaded!`);
         },
         (err) => {
             downloadStatus[type].active = false;
             downloadStatus[type].error = err.message;
-            console.error(`❌ ${type} download error:`, err);
+            console.error(`❌ ${type.toUpperCase()} download error:`, err.message);
             if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
         }
     );
@@ -185,73 +164,58 @@ app.get('/api/download/status', (req, res) => {
     res.json(downloadStatus);
 });
 
-// Initialize models after download
+// Initialize models
 app.post('/api/init-models', async (req, res) => {
     if (systemStatus === 'ready') {
-        return res.json({ message: "System already initialized." });
+        return res.json({ message: "Already initialized." });
     }
-    initJarvisMinds();
+    if (systemStatus === 'loading') {
+        return res.json({ message: "Loading in progress..." });
+    }
     res.json({ message: "Initialization started." });
+    initJarvisMinds(); // Run async in background
 });
 
-// Main Jarvis chat endpoint
+// Reset chat session
+app.post('/api/reset-chat', async (req, res) => {
+    try {
+        if (model && context) {
+            await context.dispose();
+            context = await model.createContext({ contextSize: 2048 });
+            chatSession = new LlamaChatSession({
+                contextSequence: context.getSequence(),
+                systemPrompt: "You are Jarvis, a highly advanced AI assistant. Keep answers concise, intelligent, and well-formatted."
+            });
+        }
+        res.json({ message: "Chat reset." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Main Jarvis chat
 app.post('/api/jarvis', async (req, res) => {
     const { prompt } = req.body;
 
     if (systemStatus !== 'ready') {
         return res.status(503).json({
-            error: "Jarvis is not ready yet. Please wait for models to load.",
+            error: "Jarvis is not ready. Status: " + systemStatus,
             status: systemStatus
         });
     }
 
+    if (!prompt || !prompt.trim()) {
+        return res.status(400).json({ error: "Empty prompt." });
+    }
+
     try {
-        conversationHistory.push({ role: "user", content: prompt });
-
-        // Keep only last 10 messages + system prompt
-        if (conversationHistory.length > 12) {
-            conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-10)];
-        }
-
-        // LLM inference
-        const llmResponse = await completion({
-            model: llmModelId,
-            prompt: conversationHistory,
-            temperature: 0.6
-        });
-
-        const jarvisTextReply = llmResponse.text || "Execution failed.";
-        conversationHistory.push({ role: "assistant", content: jarvisTextReply });
-
-        // TTS with caching
-        const textHash = crypto.createHash('md5').update(jarvisTextReply).digest('hex');
-        let audioBase64 = "";
-
-        if (ttsModelId) {
-            if (ttsAudioCache.has(textHash)) {
-                console.log("🎯 TTS Cache Hit!");
-                audioBase64 = ttsAudioCache.get(textHash);
-            } else {
-                console.log("⚡ Generating TTS audio...");
-                const ttsResponse = await completion({
-                    model: ttsModelId,
-                    prompt: jarvisTextReply
-                });
-                if (ttsResponse.audio) {
-                    audioBase64 = Buffer.from(ttsResponse.audio).toString('base64');
-                    ttsAudioCache.set(textHash, audioBase64);
-                }
-            }
-        }
-
-        res.json({
-            text: jarvisTextReply,
-            audio: audioBase64 ? `data:audio/wav;base64,${audioBase64}` : null
-        });
-
+        console.log(`💬 User: ${prompt}`);
+        const responseText = await chatSession.prompt(prompt);
+        console.log(`🤖 Jarvis: ${responseText.substring(0, 100)}...`);
+        res.json({ text: responseText, audio: null });
     } catch (error) {
-        console.error("Jarvis Core Error:", error);
-        res.status(500).json({ error: "Processing error occurred." });
+        console.error("Jarvis inference error:", error);
+        res.status(500).json({ error: "Processing error: " + error.message });
     }
 });
 

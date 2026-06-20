@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "type": "module",
   "dependencies": {
-    "@qvac/sdk": "^0.12.2",
+    "node-llama-cpp": "^3.0.0",
     "express": "^4.19.2",
     "cors": "^2.8.5"
   }
