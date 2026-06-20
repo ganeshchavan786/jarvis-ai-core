@@ -192,11 +192,22 @@ export default function JarvisAdvancedUI() {
       return;
     }
     if (isListening) {
-      recognitionRef.current.stop();
+      try { recognitionRef.current.stop(); } catch (_) {}
+      setIsListening(false);
     } else {
       setError({ type: null, message: '' });
-      setIsListening(true);
-      recognitionRef.current.start();
+      try {
+        recognitionRef.current.abort(); // थांबवा आधीचे
+        setTimeout(() => {
+          try {
+            setIsListening(true);
+            recognitionRef.current.start();
+          } catch (err: any) {
+            setIsListening(false);
+            setError({ type: 'server', message: 'मायक्रोफोन सुरू करण्यात अडचण. पुन्हा प्रयत्न करा.' });
+          }
+        }, 100);
+      } catch (_) {}
     }
   };
 
