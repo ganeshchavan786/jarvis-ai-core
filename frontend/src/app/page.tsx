@@ -40,7 +40,7 @@ export default function JarvisAdvancedUI() {
   const [ttsExists, setTtsExists] = useState(false);
 
   // Download URLs & Progress States
-  const [llmUrl, setLlmUrl] = useState('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf');
+  const [llmUrl, setLlmUrl] = useState('https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf');
   const [ttsUrl, setTtsUrl] = useState(''); // Empty by default, user can paste theirs
   const [downloadProgress, setDownloadProgress] = useState<DownloadStatus>({
     llm: { total: 0, downloaded: 0, percent: 0, active: false, error: null },

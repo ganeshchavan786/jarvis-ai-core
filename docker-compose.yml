@@ -17,7 +17,7 @@ services:
       mkdir -p models &&
       if [ ! -f models/qwen2.5-7b-instruct-q4_k_m.gguf ]; then
         echo '⬇️ Qwen-7B Model नाहीये, डाउनलोड सुरू होत आहे... याला इंटरनेट स्पीडनुसार ५-१५ मिनिटे लागू शकतात...';
-        wget -O models/qwen2.5-7b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf;
+        wget -O models/qwen2.5-7b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf;
         echo '✅ डाउनलोड पूर्ण झाले!';
       fi &&
       npm install && node server.js
