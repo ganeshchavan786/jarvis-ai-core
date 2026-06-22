@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Mic, MicOff, Send, Play, Pause, AlertCircle, Bot, User, RotateCcw, Download, Cpu, Activity, CheckCircle, RefreshCw } from 'lucide-react';
+import { Mic, MicOff, Send, Play, Pause, AlertCircle, Bot, User, RotateCcw, Download, Cpu, Activity, CheckCircle, RefreshCw, Plus, Trash2, Menu, X, MessageSquare } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 interface Message {
@@ -9,6 +9,13 @@ interface Message {
   sender: 'user' | 'jarvis';
   text: string;
   audioUrl?: string;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  messages: Message[];
 }
 
 interface ModelProgress {
@@ -27,6 +34,9 @@ interface DownloadStatus {
 export default function JarvisAdvancedUI() {
   // Chat States
   const [messages, setMessages] = useState<Message[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const hasLoadedRef = useRef(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -99,27 +109,68 @@ export default function JarvisAdvancedUI() {
     }
   };
 
-  // Load messages from localStorage on mount
+  // Load sessions from localStorage on mount
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const savedMessages = localStorage.getItem('jarvis_chat_messages');
-      if (savedMessages) {
+      let savedSessions: ChatSession[] = [];
+      const sessionsStr = localStorage.getItem('jarvis_chat_sessions');
+      if (sessionsStr) {
         try {
-          setMessages(JSON.parse(savedMessages));
+          savedSessions = JSON.parse(sessionsStr);
         } catch (e) {
-          console.error("Error loading chat history:", e);
+          console.error("Error loading sessions:", e);
         }
       }
+
+      let savedActiveId = localStorage.getItem('jarvis_active_session_id') || '';
+
+      if (savedSessions.length === 0) {
+        const defaultSession: ChatSession = {
+          id: Date.now().toString(),
+          title: 'नवीन संभाषण (New Chat)',
+          createdAt: Date.now(),
+          messages: []
+        };
+        savedSessions = [defaultSession];
+        savedActiveId = defaultSession.id;
+      }
+
+      setSessions(savedSessions);
+      setActiveSessionId(savedActiveId);
+
+      const activeSession = savedSessions.find(s => s.id === savedActiveId);
+      if (activeSession) {
+        setMessages(activeSession.messages);
+      }
+
       hasLoadedRef.current = true;
     }
   }, []);
 
-  // Save messages to localStorage when they change
+  // Save sessions & active session messages to localStorage when messages or active session changes
   useEffect(() => {
-    if (typeof window !== 'undefined' && hasLoadedRef.current) {
-      localStorage.setItem('jarvis_chat_messages', JSON.stringify(messages));
+    if (typeof window !== 'undefined' && hasLoadedRef.current && activeSessionId) {
+      setSessions((prevSessions) => {
+        const updated = prevSessions.map((session) => {
+          if (session.id === activeSessionId) {
+            let newTitle = session.title;
+            // Generate title from first user message if it is default
+            if (session.title === 'नवीन संभाषण (New Chat)' && messages.length > 0) {
+              const firstUserMsg = messages.find(m => m.sender === 'user');
+              if (firstUserMsg) {
+                newTitle = firstUserMsg.text.substring(0, 24) + (firstUserMsg.text.length > 24 ? '...' : '');
+              }
+            }
+            return { ...session, title: newTitle, messages: messages };
+          }
+          return session;
+        });
+        localStorage.setItem('jarvis_chat_sessions', JSON.stringify(updated));
+        return updated;
+      });
+      localStorage.setItem('jarvis_active_session_id', activeSessionId);
     }
-  }, [messages]);
+  }, [messages, activeSessionId]);
 
   // Initial load
   useEffect(() => {
@@ -267,6 +318,81 @@ export default function JarvisAdvancedUI() {
     } catch (err) {
       console.error("Failed to reset backend chat context:", err);
     }
+  };
+
+  const createNewChat = () => {
+    const newSession: ChatSession = {
+      id: Date.now().toString(),
+      title: 'नवीन संभाषण (New Chat)',
+      createdAt: Date.now(),
+      messages: []
+    };
+    
+    setSessions((prev) => {
+      const updated = [newSession, ...prev];
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('jarvis_chat_sessions', JSON.stringify(updated));
+      }
+      return updated;
+    });
+    
+    setActiveSessionId(newSession.id);
+    setMessages([]);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('jarvis_active_session_id', newSession.id);
+    }
+    setError({ type: null, message: '' });
+    
+    fetch('http://localhost:8000/api/reset-chat', { method: 'POST' }).catch(() => {});
+    setIsSidebarOpen(false);
+  };
+
+  const deleteChat = (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    const updatedSessions = sessions.filter((s) => s.id !== sessionId);
+    
+    if (updatedSessions.length === 0) {
+      const defaultSession: ChatSession = {
+        id: Date.now().toString(),
+        title: 'नवीन संभाषण (New Chat)',
+        createdAt: Date.now(),
+        messages: []
+      };
+      setSessions([defaultSession]);
+      setActiveSessionId(defaultSession.id);
+      setMessages([]);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('jarvis_chat_sessions', JSON.stringify([defaultSession]));
+        localStorage.setItem('jarvis_active_session_id', defaultSession.id);
+      }
+    } else {
+      setSessions(updatedSessions);
+      if (activeSessionId === sessionId) {
+        const nextActive = updatedSessions[0];
+        setActiveSessionId(nextActive.id);
+        setMessages(nextActive.messages);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('jarvis_active_session_id', nextActive.id);
+        }
+      }
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('jarvis_chat_sessions', JSON.stringify(updatedSessions));
+      }
+    }
+  };
+
+  const selectSession = (id: string) => {
+    setActiveSessionId(id);
+    const targetSession = sessions.find(s => s.id === id);
+    if (targetSession) {
+      setMessages(targetSession.messages);
+    } else {
+      setMessages([]);
+    }
+    setError({ type: null, message: '' });
+    fetch('http://localhost:8000/api/reset-chat', { method: 'POST' }).catch(() => {});
+    setIsSidebarOpen(false);
   };
 
   const handleSendMessage = async () => {
@@ -537,26 +663,111 @@ export default function JarvisAdvancedUI() {
 
   // --- RENDER MAIN CHAT UI ---
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-cyan-400 font-mono cyber-grid">
-      {/* हेडर बार */}
-      <header className="flex items-center justify-between px-6 py-4 glass-panel backdrop-blur shadow-[0_4px_20px_rgba(0,240,255,0.1)]">
-        <div className="flex items-center gap-3">
-          <div className="w-3 h-3 rounded-full bg-cyan-500 animate-pulse shadow-[0_0_10px_#00f0ff]" />
-          <h1 className="text-lg md:text-xl font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">
-            JARVIS // CORE PROTOCOL v2.5
-          </h1>
+    <div className="flex h-screen bg-slate-950 text-cyan-400 font-mono overflow-hidden cyber-grid">
+      
+      {/* 1. SIDEBAR (Desktop: static, Mobile: absolute slide-out drawer) */}
+      <aside className={`
+        fixed inset-y-0 left-0 z-50 w-72 bg-slate-900/95 border-r border-cyan-500/20 flex flex-col transition-transform duration-300 backdrop-blur-md
+        md:static md:translate-x-0
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+      `}>
+        {/* Sidebar Header */}
+        <div className="flex items-center justify-between px-4 py-4 border-b border-cyan-500/20">
+          <div className="flex items-center gap-2">
+            <Cpu size={16} className="text-cyan-400 animate-pulse animate-duration-3000" />
+            <span className="text-xs font-bold tracking-widest text-cyan-300">SYSTEM CONTEXTS</span>
+          </div>
+          <button 
+            onClick={() => setIsSidebarOpen(false)} 
+            className="md:hidden p-1.5 text-cyan-400 hover:text-cyan-300 hover:bg-slate-800 rounded-lg"
+          >
+            <X size={18} />
+          </button>
         </div>
-        <button 
-          onClick={clearChat} 
-          className="p-2 hover:bg-slate-800/80 rounded-lg transition-all border border-cyan-500/20 hover:border-cyan-500/50 text-cyan-500 hover:text-cyan-400" 
-          title="क्लियर चॅट"
-        >
-          <RotateCcw size={18} />
-        </button>
-      </header>
 
-      {/* चॅट हिस्टरी एरिया */}
-      <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
+        {/* New Chat Button */}
+        <div className="p-4">
+          <button 
+            onClick={createNewChat}
+            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-cyan-500/30 hover:border-cyan-400 bg-cyan-950/20 hover:bg-cyan-950/40 text-cyan-400 hover:text-cyan-300 font-bold text-xs tracking-wider transition-all duration-200 shadow-[0_0_15px_rgba(6,182,212,0.1)] hover:shadow-[0_0_20px_rgba(6,182,212,0.2)]"
+          >
+            <Plus size={16} />
+            नवीन संभाषण
+          </button>
+        </div>
+
+        {/* Sessions list */}
+        <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-1.5 custom-scrollbar">
+          <div className="text-[10px] uppercase text-cyan-500/50 font-bold px-2 mb-2 tracking-widest">
+            संभाषण सूची (Sessions)
+          </div>
+          {sessions.map((session) => (
+            <div 
+              key={session.id}
+              onClick={() => selectSession(session.id)}
+              className={`
+                group flex items-center justify-between px-3 py-3 rounded-xl border text-xs cursor-pointer transition-all duration-200
+                ${session.id === activeSessionId 
+                  ? 'bg-cyan-950/30 border-cyan-500/50 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.05)]' 
+                  : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:text-cyan-400 hover:border-cyan-500/20 hover:bg-cyan-950/10'
+                }
+              `}
+            >
+              <div className="flex items-center gap-2 truncate pr-2">
+                <MessageSquare size={14} className={session.id === activeSessionId ? "text-cyan-400 animate-pulse" : "text-slate-500 group-hover:text-cyan-500"} />
+                <span className="truncate">{session.title}</span>
+              </div>
+              <button 
+                onClick={(e) => deleteChat(session.id, e)}
+                className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-red-400 transition-all duration-200"
+                title="चॅट डिलीट करा"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      {/* Backdrop overlay for mobile sidebar */}
+      {isSidebarOpen && (
+        <div 
+          onClick={() => setIsSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm md:hidden"
+        />
+      )}
+
+      {/* 2. MAIN CHAT AREA (Flex column container) */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        
+        {/* Header Bar */}
+        <header className="flex items-center justify-between px-6 py-4 bg-slate-900/60 border-b border-cyan-500/10 backdrop-blur shadow-[0_4px_20px_rgba(0,240,255,0.05)]">
+          <div className="flex items-center gap-3">
+            {/* Hamburger Button for mobile */}
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="md:hidden p-2 text-cyan-400 hover:text-cyan-300 hover:bg-slate-800 rounded-lg mr-1 border border-cyan-500/20"
+              title="मेनू"
+            >
+              <Menu size={18} />
+            </button>
+            
+            <div className="w-3 h-3 rounded-full bg-cyan-500 animate-pulse shadow-[0_0_10px_#00f0ff]" />
+            <h1 className="text-lg md:text-xl font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">
+              JARVIS // CORE PROTOCOL v2.5
+            </h1>
+          </div>
+          <button 
+            onClick={clearChat} 
+            className="p-2 hover:bg-slate-800/80 rounded-lg transition-all border border-cyan-500/20 hover:border-cyan-500/50 text-cyan-500 hover:text-cyan-400" 
+            title="क्लियर चॅट"
+          >
+            <RotateCcw size={18} />
+          </button>
+        </header>
+
+        {/* चॅट हिस्टरी एरिया */}
+        <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-slate-500 text-center max-w-md mx-auto">
             <Bot size={64} className="mb-4 text-cyan-500/20 animate-pulse" />
@@ -659,5 +870,6 @@ export default function JarvisAdvancedUI() {
         </div>
       </footer>
     </div>
+  </div>
   );
 }
