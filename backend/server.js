@@ -2,6 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import https from 'https';
+import os from 'os';
+import path from 'path';
+import { spawn } from 'child_process';
 import { getLlama, LlamaChatSession } from 'node-llama-cpp';
 
 const app = express();
@@ -11,6 +14,7 @@ app.use(express.json());
 // Model Paths
 const LLM_PATH = "./models/qwen2.5-7b-instruct-q4_k_m.gguf";
 const TTS_PATH = "./models/supertonic-turbo.gguf";
+const PIPER_VOICE_PATH = "./tts_voices/en_US-amy-medium.onnx";
 
 // Engine instances
 let llama = null;
@@ -22,6 +26,14 @@ let chatSession = null;
 let systemStatus = 'uninitialized';
 let systemErrorMessage = '';
 
+// TTS availability
+const piperAvailable = fs.existsSync(PIPER_VOICE_PATH);
+if (piperAvailable) {
+    console.log("🎤 Piper TTS voice model found — real voice enabled!");
+} else {
+    console.log("⚠️  Piper TTS voice model NOT found at", PIPER_VOICE_PATH, "— browser TTS will be used as fallback.");
+}
+
 // Download Status Tracker
 const downloadStatus = {
     llm: { total: 0, downloaded: 0, percent: 0, active: false, error: null },
@@ -31,8 +43,73 @@ const downloadStatus = {
 function checkModelsExist() {
     return {
         llmExists: fs.existsSync(LLM_PATH),
-        ttsExists: fs.existsSync(TTS_PATH)
+        ttsExists: fs.existsSync(TTS_PATH),
+        piperReady: fs.existsSync(PIPER_VOICE_PATH)
     };
+}
+
+// --- Piper TTS: Convert text to WAV audio, return base64 data URL ---
+function synthesizeSpeech(text) {
+    return new Promise((resolve) => {
+        if (!fs.existsSync(PIPER_VOICE_PATH)) {
+            return resolve(null);
+        }
+
+        // Strip markdown characters and limit length for TTS
+        const cleanText = text
+            .replace(/[*#`_~>]/g, '')
+            .replace(/\n+/g, ' ')
+            .trim()
+            .substring(0, 500);
+
+        if (!cleanText) return resolve(null);
+
+        const tmpFile = path.join(os.tmpdir(), `jarvis_tts_${Date.now()}.wav`);
+
+        const piper = spawn('piper', [
+            '--model', PIPER_VOICE_PATH,
+            '--output_file', tmpFile
+        ]);
+
+        piper.stdin.write(cleanText);
+        piper.stdin.end();
+
+        let errorMsg = '';
+        piper.stderr.on('data', (data) => {
+            errorMsg += data.toString();
+        });
+
+        piper.on('close', (code) => {
+            if (code === 0 && fs.existsSync(tmpFile)) {
+                try {
+                    const audioBuffer = fs.readFileSync(tmpFile);
+                    fs.unlinkSync(tmpFile);
+                    const audioBase64 = 'data:audio/wav;base64,' + audioBuffer.toString('base64');
+                    console.log(`🎤 TTS generated: ${audioBuffer.length} bytes`);
+                    resolve(audioBase64);
+                } catch (err) {
+                    console.error('TTS read error:', err.message);
+                    resolve(null);
+                }
+            } else {
+                console.error('Piper TTS failed (code', code, '):', errorMsg.substring(0, 200));
+                if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+                resolve(null);
+            }
+        });
+
+        piper.on('error', (err) => {
+            console.error('Piper spawn error:', err.message);
+            resolve(null);
+        });
+
+        // Safety timeout — if piper hangs, return null after 15s
+        setTimeout(() => {
+            try { piper.kill(); } catch (_) {}
+            if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+            resolve(null);
+        }, 15000);
+    });
 }
 
 async function initJarvisMinds() {
@@ -117,12 +194,13 @@ function followRedirectsAndDownload(url, dest, type, onSuccess, onError) {
 
 // System status
 app.get('/api/system/status', (req, res) => {
-    const { llmExists, ttsExists } = checkModelsExist();
+    const { llmExists, ttsExists, piperReady } = checkModelsExist();
     res.json({
         status: systemStatus,
         error: systemErrorMessage,
         llmExists,
-        ttsExists
+        ttsExists,
+        piperReady
     });
 });
 
@@ -173,7 +251,7 @@ app.post('/api/init-models', async (req, res) => {
         return res.json({ message: "Loading in progress..." });
     }
     res.json({ message: "Initialization started." });
-    initJarvisMinds(); // Run async in background
+    initJarvisMinds();
 });
 
 // Reset chat session
@@ -193,7 +271,7 @@ app.post('/api/reset-chat', async (req, res) => {
     }
 });
 
-// Main Jarvis chat
+// Main Jarvis chat — with Piper TTS
 app.post('/api/jarvis', async (req, res) => {
     const { prompt } = req.body;
 
@@ -212,7 +290,11 @@ app.post('/api/jarvis', async (req, res) => {
         console.log(`💬 User: ${prompt}`);
         const responseText = await chatSession.prompt(prompt);
         console.log(`🤖 Jarvis: ${responseText.substring(0, 100)}...`);
-        res.json({ text: responseText, audio: null });
+
+        // Generate audio with Piper TTS (returns null if not available)
+        const audioDataUrl = await synthesizeSpeech(responseText);
+
+        res.json({ text: responseText, audio: audioDataUrl });
     } catch (error) {
         console.error("Jarvis inference error:", error);
         res.status(500).json({ error: "Processing error: " + error.message });
