@@ -2,84 +2,174 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── DARK MODE (Default) ────────────────────────────────────────────────────── */
 :root {
-  --foreground-rgb: 0, 240, 255;
-  --background-start-rgb: 2, 6, 23;
-  --background-end-rgb: 15, 23, 42;
+  --accent: 139, 92, 246;          /* violet-500 */
+  --accent-2: 167, 139, 250;       /* violet-400 */
+  --accent-3: 196, 181, 253;       /* violet-300 */
+  --bg-start: 9, 5, 20;
+  --bg-end: 15, 10, 35;
+  --surface: 20, 12, 45;
+  --surface-2: 30, 18, 60;
+  --border: 139, 92, 246;
+  --text-primary: 220, 210, 255;
+  --text-muted: 120, 100, 160;
+}
+
+/* ── LIGHT MODE ─────────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --accent: 109, 40, 217;
+  --accent-2: 124, 58, 237;
+  --accent-3: 91, 33, 182;
+  --bg-start: 245, 243, 255;
+  --bg-end: 237, 233, 254;
+  --surface: 255, 255, 255;
+  --surface-2: 245, 240, 255;
+  --border: 139, 92, 246;
+  --text-primary: 30, 20, 60;
+  --text-muted: 100, 80, 140;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
+  color: rgb(var(--text-primary));
   background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+      135deg,
+      rgb(var(--bg-start)) 0%,
+      rgb(var(--bg-end)) 100%
+    );
   min-height: 100vh;
   overflow-x: hidden;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
-/* Sci-fi Cyber Grid Background */
+/* ── Cyber Grid Background ──────────────────────────────────────────────────── */
 .cyber-grid {
-  background-image: 
-    linear-gradient(to right, rgba(6, 182, 212, 0.05) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(6, 182, 212, 0.05) 1px, transparent 1px);
+  background-image:
+    linear-gradient(to right, rgba(var(--accent), 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(var(--accent), 0.06) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 
-/* Custom Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: rgba(2, 6, 23, 0.8);
-}
+/* ── Custom Scrollbar ───────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: rgba(var(--bg-start), 0.8); }
 ::-webkit-scrollbar-thumb {
-  background: rgba(6, 182, 212, 0.3);
-  border-radius: 3px;
+  background: rgba(var(--accent), 0.35);
+  border-radius: 4px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(6, 182, 212, 0.6);
-}
+::-webkit-scrollbar-thumb:hover { background: rgba(var(--accent), 0.65); }
 
-/* Glowing Animations */
+/* ── Neon Pulse (Violet) ────────────────────────────────────────────────────── */
 @keyframes neon-pulse {
   0%, 100% {
-    box-shadow: 0 0 12px rgba(6, 182, 212, 0.4), inset 0 0 8px rgba(6, 182, 212, 0.2);
-    border-color: rgba(6, 182, 212, 0.6);
+    box-shadow: 0 0 10px rgba(var(--accent), 0.4), inset 0 0 8px rgba(var(--accent), 0.15);
+    border-color: rgba(var(--accent), 0.55);
   }
   50% {
-    box-shadow: 0 0 25px rgba(6, 182, 212, 0.8), inset 0 0 15px rgba(6, 182, 212, 0.4);
-    border-color: rgba(6, 182, 212, 1);
+    box-shadow: 0 0 28px rgba(var(--accent), 0.85), inset 0 0 16px rgba(var(--accent), 0.35);
+    border-color: rgba(var(--accent), 1);
   }
 }
+.glow-active { animation: neon-pulse 2s infinite alternate; }
 
-.glow-active {
-  animation: neon-pulse 2s infinite alternate;
+/* ── Avatar Pulse ───────────────────────────────────────────────────────────── */
+@keyframes avatar-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(var(--accent), 0.5); }
+  50%       { box-shadow: 0 0 20px rgba(var(--accent), 0.9), 0 0 40px rgba(var(--accent), 0.3); }
 }
+.avatar-glow { animation: avatar-glow 3s ease-in-out infinite; }
 
-/* Glassmorphism utility */
+/* ── Typing dot bounce ──────────────────────────────────────────────────────── */
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40%           { transform: translateY(-8px); opacity: 1; }
+}
+.dot-1 { animation: dot-bounce 1.2s ease-in-out infinite; }
+.dot-2 { animation: dot-bounce 1.2s ease-in-out 0.2s infinite; }
+.dot-3 { animation: dot-bounce 1.2s ease-in-out 0.4s infinite; }
+
+/* ── Glassmorphism ──────────────────────────────────────────────────────────── */
 .glass-panel {
-  background: rgba(15, 23, 42, 0.65);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(6, 182, 212, 0.15);
+  background: rgba(var(--surface), 0.65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(var(--border), 0.18);
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
-/* Markdown styling overrides for Jarvis replies */
-.prose {
-  color: #cbd5e1;
+[data-theme="light"] .glass-panel {
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(var(--border), 0.25);
 }
+
+/* ── Tool badge ─────────────────────────────────────────────────────────────── */
+.tool-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(var(--accent), 0.12);
+  border: 1px solid rgba(var(--accent), 0.35);
+  color: rgb(var(--accent-2));
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin: 2px 2px 6px 0;
+  font-family: monospace;
+}
+
+/* ── Markdown Prose ─────────────────────────────────────────────────────────── */
+.prose { color: rgb(var(--text-primary)); }
 .prose strong {
-  color: #22d3ee;
-  text-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
+  color: rgb(var(--accent-2));
+  text-shadow: 0 0 8px rgba(var(--accent), 0.4);
 }
-.prose ul {
-  list-style-type: square;
-  padding-left: 1.25rem;
+.prose code {
+  background: rgba(var(--accent), 0.1);
+  border: 1px solid rgba(var(--accent), 0.2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.82em;
+  color: rgb(var(--accent-3));
 }
-.prose li {
-  margin-top: 0.25rem;
-  margin-bottom: 0.25rem;
+.prose pre {
+  background: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(var(--accent), 0.2);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+}
+[data-theme="light"] .prose pre { background: rgba(0,0,0,0.06) !important; }
+.prose ul { list-style-type: square; padding-left: 1.25rem; }
+.prose li { margin-top: 0.25rem; margin-bottom: 0.25rem; }
+
+/* ── Status bar progress ────────────────────────────────────────────────────── */
+@keyframes bar-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer-bar {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent), 0.6) 0%,
+    rgba(var(--accent-3), 1) 50%,
+    rgba(var(--accent), 0.6) 100%
+  );
+  background-size: 200% 100%;
+  animation: bar-shimmer 2s linear infinite;
+}
+
+/* ── Copy button tooltip ────────────────────────────────────────────────────── */
+.copy-btn {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.msg-bubble:hover .copy-btn { opacity: 1; }
+
+/* ── Theme transition ───────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color;
+  transition-duration: 0.25s;
+  transition-timing-function: ease;
 }
