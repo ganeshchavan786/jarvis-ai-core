@@ -43,6 +43,7 @@ export default function JarvisAdvancedUI() {
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<{ type: 'network' | 'server' | null; message: string }>({ type: null, message: '' });
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const [speechLanguage, setSpeechLanguage] = useState<'mr-IN' | 'en-US'>('mr-IN');
 
   // System Setup States
   const [systemState, setSystemState] = useState<'checking' | 'uninitialized' | 'loading' | 'ready' | 'error'>('checking');
@@ -205,7 +206,7 @@ export default function JarvisAdvancedUI() {
         const recognition = new SpeechRecognition();
         recognition.continuous = false;
         recognition.interimResults = false;
-        recognition.lang = 'mr-IN';
+        recognition.lang = speechLanguage;
 
         recognition.onresult = (event: any) => {
           const speechToText = event.results[0][0].transcript;
@@ -213,16 +214,29 @@ export default function JarvisAdvancedUI() {
           setIsListening(false);
         };
 
-        recognition.onerror = () => {
+        recognition.onerror = (event: any) => {
           setIsListening(false);
-          setError({ type: 'server', message: 'आवाज समजण्यात अडचण आली. कृपया पुन्हा बोला.' });
+          console.error("Speech recognition error:", event.error);
+          let message = 'आवाज समजण्यात अडचण आली. कृपया पुन्हा बोला.';
+          if (event.error === 'not-allowed') {
+            message = 'मायक्रोफोन परवानगी नाकारली गेली आहे (Microphone access denied). कृपया ब्राउझरमध्ये परवानगी द्या.';
+          } else if (event.error === 'no-speech') {
+            message = 'आवाज ऐकू आला नाही (No speech detected). कृपया पुन्हा प्रयत्न करा.';
+          } else if (event.error === 'network') {
+            message = 'नेटवर्क एरर आला आहे. कृपया इंटरनेट कनेक्शन तपासा.';
+          } else if (event.error === 'aborted') {
+            message = 'व्हॉईस इनपुट थांबवले गेले.';
+          } else {
+            message = `व्हॉईस इनपुट एरर: ${event.error}. कृपया पुन्हा प्रयत्न करा.`;
+          }
+          setError({ type: 'server', message });
         };
 
         recognition.onend = () => setIsListening(false);
         recognitionRef.current = recognition;
       }
     }
-  }, []);
+  }, [speechLanguage]);
 
   const triggerDownload = async (type: 'llm' | 'tts') => {
     const url = type === 'llm' ? llmUrl : ttsUrl;
@@ -272,6 +286,7 @@ export default function JarvisAdvancedUI() {
       setError({ type: null, message: '' });
       try {
         recognitionRef.current.abort(); // थांबवा आधीचे
+        recognitionRef.current.lang = speechLanguage;
         setTimeout(() => {
           try {
             setIsListening(true);
@@ -848,6 +863,18 @@ export default function JarvisAdvancedUI() {
             title={isListening ? "ऐकणे थांबवा" : "बोला (Marathi/English)"}
           >
             {isListening ? <MicOff size={22} className="animate-pulse" /> : <Mic size={22} />}
+          </button>
+
+          <button
+            onClick={() => setSpeechLanguage(prev => prev === 'mr-IN' ? 'en-US' : 'mr-IN')}
+            className={`px-3 rounded-xl border transition-all shrink-0 font-bold text-xs flex items-center justify-center ${
+              speechLanguage === 'mr-IN'
+                ? 'bg-cyan-950/40 border-cyan-500/30 text-cyan-400 hover:border-cyan-500/60'
+                : 'bg-blue-950/40 border-blue-500/30 text-blue-400 hover:border-blue-500/60'
+            }`}
+            title="भाषा बदला (Switch input language)"
+          >
+            {speechLanguage === 'mr-IN' ? 'मराठी' : 'ENG'}
           </button>
 
           <input
