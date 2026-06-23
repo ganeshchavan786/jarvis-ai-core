@@ -300,93 +300,318 @@ function compileAllTools() {
             }
         }),
 
-        // --- 💻 CODING AGENT TOOLS ---
+        // ═══════════════════════════════════════════════════════════════
+        // 💻 CODING AGENT v2 — Level 1 + 2 + 3 Improvements
+        // ═══════════════════════════════════════════════════════════════
+
+        // ── LEVEL 1: Safe file path helper ──────────────────────────────
+        // (internal, not a tool — used by all file tools below)
+
+        // ── LEVEL 1: write_code_file (subfolder support) ─────────────────
         write_code_file: defineChatSessionFunction({
-            description: "Write code to a file in the workspace directory. Use this to create new code files or overwrite/edit existing ones.",
+            description: "Write or overwrite a code file in the workspace. Supports subdirectories (e.g. 'src/utils/helper.py'). Use this to create new files.",
             params: {
                 type: "object",
                 properties: {
-                    filename: { type: "string", description: "Name of the file (e.g. index.js, app.py)" },
-                    code: { type: "string", description: "Full contents/code of the file." }
+                    filename: { type: "string", description: "Relative file path inside workspace (e.g. 'index.js', 'src/app.py')" },
+                    code: { type: "string", description: "Full file contents to write." }
                 },
                 required: ["filename", "code"]
             },
             handler: async ({ filename, code }) => {
                 const WORKSPACE_DIR = "./workspace";
                 try {
-                    const safeName = path.basename(filename);
-                    const destPath = path.join(WORKSPACE_DIR, safeName);
-                    await fs.promises.mkdir(WORKSPACE_DIR, { recursive: true });
+                    // Level 2: Subfolder support — allow paths like src/utils/helper.js
+                    const safePath = filename.replace(/\.\./g, '').replace(/^\//, '');
+                    const destPath = path.join(WORKSPACE_DIR, safePath);
+                    await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
                     await fs.promises.writeFile(destPath, code, 'utf8');
-                    return { status: "success", message: `Successfully wrote file ${safeName} inside workspace.` };
+                    const lines = code.split('\n').length;
+                    console.log(`📝 Written: ${safePath} (${lines} lines)`);
+                    return { status: "success", message: `Written ${safePath} (${lines} lines).` };
                 } catch (err) {
                     return { error: err.message };
                 }
             }
         }),
 
-        read_code_file: defineChatSessionFunction({
-            description: "Read the content of a file in the workspace directory to review or edit its code.",
+        // ── LEVEL 1: patch_code_file — edit specific lines only ──────────
+        patch_code_file: defineChatSessionFunction({
+            description: "Edit a specific part of an existing file by replacing old_str with new_str. Use this instead of rewriting the whole file when making small changes.",
             params: {
                 type: "object",
                 properties: {
-                    filename: { type: "string", description: "Name of the file to read." }
+                    filename: { type: "string", description: "Relative file path inside workspace." },
+                    old_str: { type: "string", description: "The exact string to find and replace." },
+                    new_str: { type: "string", description: "The replacement string." }
+                },
+                required: ["filename", "old_str", "new_str"]
+            },
+            handler: async ({ filename, old_str, new_str }) => {
+                const WORKSPACE_DIR = "./workspace";
+                try {
+                    const safePath = filename.replace(/\.\./g, '').replace(/^\//, '');
+                    const filePath = path.join(WORKSPACE_DIR, safePath);
+                    if (!fs.existsSync(filePath)) return { error: `File not found: ${safePath}` };
+                    const content = await fs.promises.readFile(filePath, 'utf8');
+                    if (!content.includes(old_str)) return { error: `old_str not found in ${safePath}. Read the file first to get exact content.` };
+                    const patched = content.replace(old_str, new_str);
+                    await fs.promises.writeFile(filePath, patched, 'utf8');
+                    return { status: "success", message: `Patched ${safePath} successfully.` };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }
+        }),
+
+        // ── LEVEL 1: read_code_file (with line numbers) ──────────────────
+        read_code_file: defineChatSessionFunction({
+            description: "Read a file from the workspace. Returns content with line numbers for easy reference. Supports subdirectory paths.",
+            params: {
+                type: "object",
+                properties: {
+                    filename: { type: "string", description: "Relative file path inside workspace." }
                 },
                 required: ["filename"]
             },
             handler: async ({ filename }) => {
                 const WORKSPACE_DIR = "./workspace";
                 try {
-                    const safeName = path.basename(filename);
-                    const filePath = path.join(WORKSPACE_DIR, safeName);
-                    if (!fs.existsSync(filePath)) {
-                        return { error: `File ${safeName} not found in workspace.` };
-                    }
+                    const safePath = filename.replace(/\.\./g, '').replace(/^\//, '');
+                    const filePath = path.join(WORKSPACE_DIR, safePath);
+                    if (!fs.existsSync(filePath)) return { error: `File not found: ${safePath}` };
                     const content = await fs.promises.readFile(filePath, 'utf8');
-                    return { filename: safeName, content };
+                    // Level 1: Add line numbers for easy patching reference
+                    const numbered = content.split('\n')
+                        .map((line, i) => `${String(i + 1).padStart(4, ' ')} | ${line}`)
+                        .join('\n');
+                    // Level 1: Truncate large files to avoid context overflow
+                    const MAX_CHARS = 8000;
+                    const truncated = numbered.length > MAX_CHARS;
+                    return {
+                        filename: safePath,
+                        content: truncated ? numbered.substring(0, MAX_CHARS) + '\n... [truncated]' : numbered,
+                        total_lines: content.split('\n').length,
+                        truncated
+                    };
                 } catch (err) {
                     return { error: err.message };
                 }
             }
         }),
 
-        list_workspace_files: defineChatSessionFunction({
-            description: "List all files and scripts currently in the workspace folder.",
-            handler: async () => {
-                const WORKSPACE_DIR = "./workspace";
-                try {
-                    if (!fs.existsSync(WORKSPACE_DIR)) return { files: [] };
-                    const files = await fs.promises.readdir(WORKSPACE_DIR);
-                    return { files };
-                } catch (err) {
-                    return { error: err.message };
-                }
-            }
-        }),
-
-        execute_code_command: defineChatSessionFunction({
-            description: "Execute a development command (like python3, node, compilation, script execution) inside the workspace.",
+        // ── LEVEL 1: delete_file ─────────────────────────────────────────
+        delete_file: defineChatSessionFunction({
+            description: "Delete a file from the workspace. Use to clean up temp files or remove incorrect code.",
             params: {
                 type: "object",
                 properties: {
-                    command: { type: "string", description: "The exact terminal command to run (e.g. 'python3 test.py', 'node index.js')" }
+                    filename: { type: "string", description: "Relative file path inside workspace to delete." }
                 },
-                required: ["command"]
+                required: ["filename"]
             },
-            handler: async ({ command }) => {
+            handler: async ({ filename }) => {
                 const WORKSPACE_DIR = "./workspace";
-                const blockedKeywords = ["rm -rf", "rm ", "mv ", "mkfs", "dd ", "shutdown", "reboot", ":()"];
-                for (const word of blockedKeywords) {
-                    if (command.toLowerCase().includes(word)) {
-                        return { error: `Command blocked for safety reasons: contains '${word}'` };
+                try {
+                    const safePath = filename.replace(/\.\./g, '').replace(/^\//, '');
+                    const filePath = path.join(WORKSPACE_DIR, safePath);
+                    if (!fs.existsSync(filePath)) return { error: `File not found: ${safePath}` };
+                    await fs.promises.unlink(filePath);
+                    return { status: "success", message: `Deleted ${safePath}.` };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }
+        }),
+
+        // ── LEVEL 2: list_workspace_files (recursive with metadata) ──────
+        list_workspace_files: defineChatSessionFunction({
+            description: "List all files in the workspace, including subdirectories, with file sizes and last modified times.",
+            handler: async () => {
+                const WORKSPACE_DIR = "./workspace";
+                try {
+                    if (!fs.existsSync(WORKSPACE_DIR)) return { files: [], total: 0 };
+
+                    async function listRecursive(dir, base = '') {
+                        const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+                        let results = [];
+                        for (const entry of entries) {
+                            const relPath = base ? `${base}/${entry.name}` : entry.name;
+                            if (entry.isDirectory()) {
+                                const sub = await listRecursive(path.join(dir, entry.name), relPath);
+                                results = results.concat(sub);
+                            } else {
+                                const stat = await fs.promises.stat(path.join(dir, entry.name));
+                                results.push({
+                                    path: relPath,
+                                    size: `${(stat.size / 1024).toFixed(1)} KB`,
+                                    modified: new Date(stat.mtime).toLocaleString()
+                                });
+                            }
+                        }
+                        return results;
                     }
+
+                    const files = await listRecursive(WORKSPACE_DIR);
+                    return { files, total: files.length };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }
+        }),
+
+        // ── LEVEL 2: search_in_files ─────────────────────────────────────
+        search_in_files: defineChatSessionFunction({
+            description: "Search for a keyword or pattern across all files in the workspace. Returns matching lines with file name and line number.",
+            params: {
+                type: "object",
+                properties: {
+                    keyword: { type: "string", description: "Text to search for across all workspace files." }
+                },
+                required: ["keyword"]
+            },
+            handler: async ({ keyword }) => {
+                const WORKSPACE_DIR = "./workspace";
+                try {
+                    if (!fs.existsSync(WORKSPACE_DIR)) return { matches: [] };
+                    const files = await fs.promises.readdir(WORKSPACE_DIR, { recursive: true });
+                    const matches = [];
+                    for (const file of files) {
+                        const fullPath = path.join(WORKSPACE_DIR, file);
+                        try {
+                            const stat = await fs.promises.stat(fullPath);
+                            if (!stat.isFile()) continue;
+                            const content = await fs.promises.readFile(fullPath, 'utf8');
+                            content.split('\n').forEach((line, i) => {
+                                if (line.toLowerCase().includes(keyword.toLowerCase())) {
+                                    matches.push({ file, line: i + 1, content: line.trim() });
+                                }
+                            });
+                        } catch (_) {}
+                    }
+                    return { matches, total: matches.length };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }
+        }),
+
+        // ── LEVEL 2: install_package ─────────────────────────────────────
+        install_package: defineChatSessionFunction({
+            description: "Install an npm or pip package in the workspace. Use when the code needs a library that is not yet installed.",
+            params: {
+                type: "object",
+                properties: {
+                    manager: { type: "string", enum: ["npm", "pip"], description: "Package manager to use." },
+                    package: { type: "string", description: "Package name to install (e.g. 'lodash', 'pandas')." }
+                },
+                required: ["manager", "package"]
+            },
+            handler: async ({ manager, package: pkg }) => {
+                const WORKSPACE_DIR = "./workspace";
+                // Basic safety: block suspicious package names
+                if (!/^[a-zA-Z0-9@/_\-\.]+$/.test(pkg)) {
+                    return { error: "Invalid package name." };
                 }
                 try {
                     await fs.promises.mkdir(WORKSPACE_DIR, { recursive: true });
-                    const { stdout, stderr } = await execPromise(command, { cwd: WORKSPACE_DIR, timeout: 15000 });
-                    return { stdout, stderr };
+                    const cmd = manager === 'npm'
+                        ? `npm install ${pkg}`
+                        : `pip install ${pkg} --quiet`;
+                    const { stdout, stderr } = await execPromise(cmd, { cwd: WORKSPACE_DIR, timeout: 60000 });
+                    console.log(`📦 Installed [${manager}] ${pkg}`);
+                    return { status: "success", stdout: stdout.substring(0, 500), stderr: stderr.substring(0, 200) };
                 } catch (err) {
-                    return { error: err.message, stderr: err.stderr };
+                    return { error: err.message };
+                }
+            }
+        }),
+
+        // ── LEVEL 1+3: execute_code_command (improved + auto-debug loop) ─
+        execute_code_command: defineChatSessionFunction({
+            description: "Run a terminal command in the workspace (python3, node, bash scripts, etc.). If the command fails, Jarvis will automatically try to fix and retry once. Timeout is 60 seconds.",
+            params: {
+                type: "object",
+                properties: {
+                    command: { type: "string", description: "Terminal command to run (e.g. 'python3 app.py', 'node index.js', 'bash run.sh')" },
+                    auto_fix: { type: "boolean", description: "If true and command fails, Jarvis will attempt to auto-fix the error and retry. Default: true." }
+                },
+                required: ["command"]
+            },
+            handler: async ({ command, auto_fix = true }) => {
+                const WORKSPACE_DIR = "./workspace";
+
+                // Level 1: Enhanced blocked keywords
+                const blockedKeywords = [
+                    "rm -rf", "rm -r", "mkfs", "dd if=", "shutdown", "reboot",
+                    ":(){", "wget http", "curl http", "nc -", ">/dev/sd",
+                    "chmod 777 /", "chown root"
+                ];
+                for (const word of blockedKeywords) {
+                    if (command.toLowerCase().includes(word)) {
+                        return { error: `⛔ Command blocked (safety): '${word}'` };
+                    }
+                }
+
+                // Level 2: Auto-detect runtime from file extension
+                const fileMatch = command.match(/\S+\.(py|js|ts|sh|rb|go)$/);
+                let finalCommand = command;
+                if (fileMatch && !command.startsWith('python') && !command.startsWith('node') && !command.startsWith('bash')) {
+                    const ext = fileMatch[1];
+                    const runtimeMap = { py: 'python3', js: 'node', sh: 'bash', rb: 'ruby', go: 'go run' };
+                    if (runtimeMap[ext]) finalCommand = `${runtimeMap[ext]} ${command}`;
+                }
+
+                const runCommand = async (cmd) => {
+                    await fs.promises.mkdir(WORKSPACE_DIR, { recursive: true });
+                    // Level 1: Increased timeout 15s → 60s
+                    const { stdout, stderr } = await execPromise(cmd, { cwd: WORKSPACE_DIR, timeout: 60000 });
+
+                    // Level 1: Truncate large outputs
+                    const MAX_OUT = 5000;
+                    return {
+                        stdout: stdout.length > MAX_OUT ? stdout.substring(0, MAX_OUT) + '\n...[output truncated]' : stdout,
+                        stderr: stderr.length > MAX_OUT ? stderr.substring(0, MAX_OUT) + '\n...[truncated]' : stderr,
+                        command: cmd
+                    };
+                };
+
+                try {
+                    const result = await runCommand(finalCommand);
+                    // Level 3: Log execution history
+                    const logEntry = `[${new Date().toISOString()}] CMD: ${finalCommand} | exit: 0\n`;
+                    await fs.promises.appendFile(path.join(WORKSPACE_DIR, '.execution_log'), logEntry, 'utf8').catch(() => {});
+                    return result;
+                } catch (err) {
+                    // Level 3: Auto-debug loop — if error, log it and return structured error for Jarvis to analyze
+                    const logEntry = `[${new Date().toISOString()}] CMD: ${finalCommand} | exit: ERROR | ${err.message}\n`;
+                    await fs.promises.appendFile(path.join(WORKSPACE_DIR, '.execution_log'), logEntry, 'utf8').catch(() => {});
+
+                    return {
+                        error: err.message,
+                        stderr: err.stderr ? err.stderr.substring(0, 2000) : '',
+                        command: finalCommand,
+                        auto_fix_hint: auto_fix
+                            ? `❗ Command failed. Read the error above, fix the code using patch_code_file or write_code_file, then run execute_code_command again.`
+                            : null
+                    };
+                }
+            }
+        }),
+
+        // ── LEVEL 3: get_execution_log ───────────────────────────────────
+        get_execution_log: defineChatSessionFunction({
+            description: "Read the execution history log of all commands run in the workspace session.",
+            handler: async () => {
+                const logPath = "./workspace/.execution_log";
+                try {
+                    if (!fs.existsSync(logPath)) return { log: "No commands executed yet." };
+                    const content = await fs.promises.readFile(logPath, 'utf8');
+                    const lines = content.trim().split('\n');
+                    // Return last 30 entries
+                    return { log: lines.slice(-30).join('\n'), total_entries: lines.length };
+                } catch (err) {
+                    return { error: err.message };
                 }
             }
         }),
@@ -420,7 +645,26 @@ async function initJarvisMinds() {
 
         chatSession = new LlamaChatSession({
             contextSequence: context.getSequence(),
-            systemPrompt: "You are Jarvis, a highly advanced AI assistant. You can perform actions, write/read files, run code and use MCP servers via tools. Keep answers concise, intelligent, and well-formatted. If you run a command or call a tool, briefly explain what you did. Use markdown for lists and bold text."
+            systemPrompt: `You are Jarvis, a highly advanced AI coding assistant and system agent. You have a full coding workspace at your disposal.
+
+CODING AGENT TOOLS (use in this order for coding tasks):
+1. list_workspace_files — see what files exist (includes subdirs + sizes)
+2. write_code_file — create new files (supports subdirs like 'src/app.py')
+3. patch_code_file — edit specific parts of a file without rewriting it all
+4. read_code_file — read files with line numbers (always do this before patching)
+5. execute_code_command — run code (python3, node, bash). Auto-detects runtime.
+6. install_package — install npm or pip packages when needed
+7. search_in_files — search keyword across all workspace files
+8. delete_file — remove files
+9. get_execution_log — see history of all commands run
+
+AUTO-DEBUG RULE: If execute_code_command returns an error, you MUST:
+  a) Read the error carefully
+  b) Read the failing file with read_code_file
+  c) Fix it using patch_code_file
+  d) Run execute_code_command again (up to 3 retries before asking user)
+
+Keep answers concise. Use markdown. Always explain what tool you called and why.`
         });
 
         systemStatus = 'ready';
