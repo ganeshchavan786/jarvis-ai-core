@@ -721,14 +721,30 @@ function followRedirectsAndDownload(url, dest, type, onSuccess, onError) {
 // System status
 app.get('/api/system/status', (req, res) => {
     const { llmExists, ttsExists, piperReady } = checkModelsExist();
+
+    // CPU usage (average load % over last 1 min)
+    const cpus = os.cpus();
+    const avgLoad = os.loadavg()[0];
+    const cpuPercent = Math.min(100, Math.round((avgLoad / cpus.length) * 100));
+
+    // RAM
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+
     res.json({
         status: systemStatus,
         error: systemErrorMessage,
         llmExists,
         ttsExists,
-        piperReady
+        piperReady,
+        cpu: cpuPercent,
+        ramUsed: Math.round(usedMem / 1024 / 1024),   // MB
+        ramTotal: Math.round(totalMem / 1024 / 1024),  // MB
+        uptime: Math.floor(os.uptime())                 // seconds
     });
 });
+
 
 // Start model download
 app.post('/api/download', (req, res) => {
