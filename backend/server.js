@@ -6,11 +6,36 @@ import os from 'os';
 import path from 'path';
 import { spawn, exec } from 'child_process';
 import util from 'util';
+import Database from 'better-sqlite3';
 import { getLlama, LlamaChatSession, defineChatSessionFunction } from 'node-llama-cpp';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const execPromise = util.promisify(exec);
+
+// --- SQLite Chat History DB Setup ---
+const db = new Database('./chat_history.db');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    text TEXT NOT NULL,
+    audio_url TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_messages_text ON messages(text);
+`);
+console.log("✅ SQLite chat history DB initialized.");
 
 const app = express();
 app.use(cors());
@@ -562,6 +587,97 @@ app.post('/api/jarvis', async (req, res) => {
         res.status(500).json({ error: "Processing error: " + error.message });
     }
 });
+
+// ─── HISTORY API ENDPOINTS ────────────────────────────────────────────────────
+
+// GET all sessions (grouped by date, newest first)
+app.get('/api/history/sessions', (req, res) => {
+    try {
+        const sessions = db.prepare(
+            'SELECT id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC'
+        ).all();
+        res.json({ sessions });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET messages for a specific session
+app.get('/api/history/sessions/:sessionId/messages', (req, res) => {
+    try {
+        const messages = db.prepare(
+            'SELECT id, session_id, sender, text, audio_url, created_at FROM messages WHERE session_id = ? ORDER BY created_at ASC'
+        ).all(req.params.sessionId);
+        res.json({ messages });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST create or update session
+app.post('/api/history/sessions', (req, res) => {
+    try {
+        const { id, title, created_at } = req.body;
+        if (!id || !title) return res.status(400).json({ error: 'id and title required' });
+        const now = Date.now();
+        db.prepare(
+            'INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at'
+        ).run(id, title, created_at || now, now);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST save a message
+app.post('/api/history/messages', (req, res) => {
+    try {
+        const { id, session_id, sender, text, audio_url, created_at } = req.body;
+        if (!id || !session_id || !sender || !text) return res.status(400).json({ error: 'Missing required fields' });
+        const now = created_at || Date.now();
+        db.prepare(
+            'INSERT OR REPLACE INTO messages (id, session_id, sender, text, audio_url, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(id, session_id, sender, text, audio_url || null, now);
+        // Update session updated_at
+        db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(now, session_id);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// DELETE a session and all its messages
+app.delete('/api/history/sessions/:sessionId', (req, res) => {
+    try {
+        db.prepare('DELETE FROM messages WHERE session_id = ?').run(req.params.sessionId);
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(req.params.sessionId);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET search across all messages
+app.get('/api/history/search', (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q || String(q).trim().length < 2) return res.json({ results: [] });
+        const keyword = `%${String(q).trim()}%`;
+        const rows = db.prepare(`
+            SELECT m.id, m.session_id, m.sender, m.text, m.created_at, s.title as session_title
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE m.text LIKE ?
+            ORDER BY m.created_at DESC
+            LIMIT 50
+        `).all(keyword);
+        res.json({ results: rows });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // --- Bootloader Sequence ---
 async function startServer() {
