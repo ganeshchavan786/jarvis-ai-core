@@ -67,7 +67,7 @@ export default function JarvisAdvancedUI() {
   // Poll system status
   const checkSystemStatus = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/system/status');
+      const res = await fetch('https://jarvis.vrushaliinfotech.com/api/system/status');
       if (!res.ok) throw new Error("Backend offline");
       const data = await res.json();
       
@@ -89,7 +89,7 @@ export default function JarvisAdvancedUI() {
   // Poll download progress
   const checkDownloadStatus = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/download/status');
+      const res = await fetch('https://jarvis.vrushaliinfotech.com/api/download/status');
       if (!res.ok) throw new Error("Offline");
       const data: DownloadStatus = await res.json();
       
@@ -232,7 +232,7 @@ export default function JarvisAdvancedUI() {
     }
 
     try {
-      const res = await fetch('http://localhost:8000/api/download', {
+      const res = await fetch('https://jarvis.vrushaliinfotech.com/api/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, url })
@@ -250,7 +250,7 @@ export default function JarvisAdvancedUI() {
   const triggerInit = async () => {
     try {
       setSystemState('loading');
-      await fetch('http://localhost:8000/api/init-models', { method: 'POST' });
+      await fetch('https://jarvis.vrushaliinfotech.com/api/init-models', { method: 'POST' });
       // Poll faster to check status
       if (statusPollRef.current) clearInterval(statusPollRef.current);
       statusPollRef.current = setInterval(checkSystemStatus, 2000);
@@ -314,7 +314,7 @@ export default function JarvisAdvancedUI() {
     setMessages([]);
     setError({ type: null, message: '' });
     try {
-      await fetch('http://localhost:8000/api/reset-chat', { method: 'POST' });
+      await fetch('https://jarvis.vrushaliinfotech.com/api/reset-chat', { method: 'POST' });
     } catch (err) {
       console.error("Failed to reset backend chat context:", err);
     }
@@ -343,7 +343,7 @@ export default function JarvisAdvancedUI() {
     }
     setError({ type: null, message: '' });
     
-    fetch('http://localhost:8000/api/reset-chat', { method: 'POST' }).catch(() => {});
+    fetch('https://jarvis.vrushaliinfotech.com/api/reset-chat', { method: 'POST' }).catch(() => {});
     setIsSidebarOpen(false);
   };
 
@@ -391,7 +391,7 @@ export default function JarvisAdvancedUI() {
       setMessages([]);
     }
     setError({ type: null, message: '' });
-    fetch('http://localhost:8000/api/reset-chat', { method: 'POST' }).catch(() => {});
+    fetch('https://jarvis.vrushaliinfotech.com/api/reset-chat', { method: 'POST' }).catch(() => {});
     setIsSidebarOpen(false);
   };
 
@@ -407,7 +407,7 @@ export default function JarvisAdvancedUI() {
     setLoading(true);
 
     try {
-      const res = await fetch('http://localhost:8000/api/jarvis', {
+      const res = await fetch('https://jarvis.vrushaliinfotech.com/api/jarvis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: userPrompt }),
@@ -873,3 +873,4 @@ export default function JarvisAdvancedUI() {
   </div>
   );
 }
+
