@@ -4,7 +4,8 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Mic, MicOff, Send, Play, Pause, AlertCircle, Bot, User,
   RotateCcw, Download, Cpu, Activity, CheckCircle, RefreshCw,
-  Plus, Trash2, Menu, X, MessageSquare, Search, Calendar, ChevronDown, ChevronRight
+  Plus, Trash2, Menu, X, MessageSquare, Search, Calendar, ChevronDown, ChevronRight,
+  FolderOpen, FileCode, Terminal, ChevronUp, Eye, FolderClosed, Code, RefreshCcw
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -51,6 +52,226 @@ interface SearchResult {
   sender: string;
   text: string;
   created_at: number;
+}
+
+// ── Workspace Visualizer Types ───────────────────────────────────────────────
+
+interface WorkspaceFile {
+  name: string;
+  path: string;
+  type: 'file' | 'dir';
+  size?: number;
+  modified?: number;
+  children?: WorkspaceFile[];
+}
+
+// ── Workspace File Tree Node ──────────────────────────────────────────────────
+function FileTreeNode({
+  node, depth = 0, onSelect, selectedPath
+}: {
+  node: WorkspaceFile;
+  depth?: number;
+  onSelect: (path: string) => void;
+  selectedPath: string;
+}) {
+  const [open, setOpen] = useState(depth < 2);
+  const isSelected = node.path === selectedPath;
+
+  const ext = node.name.split('.').pop()?.toLowerCase() || '';
+  const iconColor = {
+    py: 'text-yellow-400', js: 'text-yellow-300', ts: 'text-blue-400',
+    tsx: 'text-blue-300', json: 'text-green-400', md: 'text-slate-300',
+    txt: 'text-slate-400', sh: 'text-green-300', css: 'text-pink-400'
+  }[ext] || 'text-slate-400';
+
+  if (node.type === 'dir') {
+    return (
+      <div>
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex items-center gap-1.5 w-full px-2 py-1 hover:bg-cyan-950/20 rounded text-left transition-colors"
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+        >
+          {open ? <FolderOpen size={13} className="text-cyan-400 shrink-0" /> : <FolderClosed size={13} className="text-cyan-500/70 shrink-0" />}
+          <span className="text-xs text-cyan-300/80 truncate">{node.name}</span>
+          {open ? <ChevronUp size={10} className="ml-auto text-slate-600" /> : <ChevronDown size={10} className="ml-auto text-slate-600" />}
+        </button>
+        {open && node.children?.map(child => (
+          <FileTreeNode key={child.path} node={child} depth={depth + 1} onSelect={onSelect} selectedPath={selectedPath} />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => onSelect(node.path)}
+      className={`flex items-center gap-1.5 w-full px-2 py-1 rounded text-left transition-colors ${
+        isSelected ? 'bg-cyan-950/40 border-l-2 border-cyan-400' : 'hover:bg-slate-800/40'
+      }`}
+      style={{ paddingLeft: `${8 + depth * 14}px` }}
+    >
+      <FileCode size={12} className={`${iconColor} shrink-0`} />
+      <span className={`text-xs truncate ${isSelected ? 'text-cyan-300' : 'text-slate-400'}`}>{node.name}</span>
+      {node.size !== undefined && <span className="ml-auto text-[9px] text-slate-600 shrink-0">{node.size < 1024 ? node.size + 'B' : (node.size/1024).toFixed(1) + 'KB'}</span>}
+    </button>
+  );
+}
+
+// ── Workspace Panel Component ─────────────────────────────────────────────────
+function WorkspacePanel({ onClose }: { onClose: () => void }) {
+  const [activeTab, setActiveTab] = useState<'files' | 'code' | 'terminal'>('files');
+  const [fileTree, setFileTree] = useState<WorkspaceFile[]>([]);
+  const [selectedFile, setSelectedFile] = useState('');
+  const [fileContent, setFileContent] = useState('');
+  const [fileExt, setFileExt] = useState('');
+  const [execLog, setExecLog] = useState('');
+  const [loading, setLoading] = useState(false);
+  const terminalRef = useRef<HTMLDivElement>(null);
+
+  const fetchTree = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/workspace/files`);
+      const data = await res.json();
+      setFileTree(data.tree || []);
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  const fetchFile = async (filePath: string) => {
+    setLoading(true);
+    setSelectedFile(filePath);
+    setActiveTab('code');
+    try {
+      const res = await fetch(`${API}/api/workspace/file?path=${encodeURIComponent(filePath)}`);
+      const data = await res.json();
+      setFileContent(data.content || '');
+      setFileExt(data.ext || '');
+    } catch { setFileContent('Error loading file.'); }
+    setLoading(false);
+  };
+
+  const fetchLog = async () => {
+    setLoading(true);
+    setActiveTab('terminal');
+    try {
+      const res = await fetch(`${API}/api/workspace/execution-log`);
+      const data = await res.json();
+      setExecLog(data.log || '(कोणतेही commands चालवले नाहीत)');
+    } catch { setExecLog('Error loading log.'); }
+    setLoading(false);
+    setTimeout(() => terminalRef.current?.scrollTo({ top: 9999, behavior: 'smooth' }), 100);
+  };
+
+  useEffect(() => { fetchTree(); }, []);
+
+  // Auto-refresh every 5s
+  useEffect(() => {
+    const t = setInterval(() => {
+      fetchTree();
+      if (activeTab === 'terminal') fetchLog();
+    }, 5000);
+    return () => clearInterval(t);
+  }, [activeTab]);
+
+  return (
+    <div className="flex flex-col h-full w-80 xl:w-96 border-l border-cyan-500/20 bg-slate-900/95 backdrop-blur-md shrink-0">
+      {/* Panel Header */}
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-cyan-500/15 bg-slate-950/60">
+        <div className="flex items-center gap-2">
+          <Code size={14} className="text-cyan-400" />
+          <span className="text-xs font-bold tracking-widest text-cyan-300">WORKSPACE</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={fetchTree} className="p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-cyan-400 transition-colors" title="Refresh">
+            <RefreshCcw size={13} />
+          </button>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-red-400 transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-cyan-500/15">
+        {([
+          { key: 'files', icon: FolderOpen, label: 'Files' },
+          { key: 'code',  icon: FileCode,   label: 'Code'  },
+          { key: 'terminal', icon: Terminal, label: 'Terminal' }
+        ] as const).map(({ key, icon: Icon, label }) => (
+          <button key={key}
+            onClick={() => key === 'terminal' ? fetchLog() : setActiveTab(key)}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] font-bold tracking-wider transition-colors ${
+              activeTab === key
+                ? 'text-cyan-400 border-b-2 border-cyan-400 bg-cyan-950/20'
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            <Icon size={11} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      <div className="flex-1 overflow-hidden">
+
+        {/* FILES TAB */}
+        {activeTab === 'files' && (
+          <div className="h-full overflow-y-auto py-1">
+            {loading && <p className="text-[10px] text-slate-500 px-3 py-2">Loading...</p>}
+            {!loading && fileTree.length === 0 && (
+              <p className="text-[10px] text-slate-600 px-3 py-4 text-center">Workspace रिकामी आहे.<br/>जार्विसला code लिहायला सांगा!</p>
+            )}
+            {fileTree.map(node => (
+              <FileTreeNode key={node.path} node={node} onSelect={fetchFile} selectedPath={selectedFile} />
+            ))}
+          </div>
+        )}
+
+        {/* CODE TAB */}
+        {activeTab === 'code' && (
+          <div className="h-full flex flex-col">
+            {selectedFile && (
+              <div className="px-3 py-1.5 bg-slate-950/60 border-b border-cyan-500/10 flex items-center gap-2">
+                <FileCode size={11} className="text-cyan-500 shrink-0" />
+                <span className="text-[10px] text-slate-400 truncate">{selectedFile}</span>
+              </div>
+            )}
+            <div className="flex-1 overflow-y-auto">
+              {loading && <p className="text-[10px] text-slate-500 px-3 py-4">Loading...</p>}
+              {!loading && !selectedFile && (
+                <p className="text-[10px] text-slate-600 px-3 py-4 text-center">Files tab मधून file select करा</p>
+              )}
+              {!loading && fileContent && (
+                <pre className="text-[10px] leading-relaxed text-slate-300 p-3 font-mono whitespace-pre-wrap break-all">{fileContent}</pre>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TERMINAL TAB */}
+        {activeTab === 'terminal' && (
+          <div ref={terminalRef} className="h-full overflow-y-auto bg-black/40 font-mono">
+            {loading && <p className="text-[10px] text-green-500/60 px-3 py-4">Loading...</p>}
+            {!loading && (
+              <pre className="text-[10px] leading-relaxed text-green-400/80 p-3 whitespace-pre-wrap break-all">
+                {execLog || '(कोणतेही commands चालवले नाहीत)'}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Status Bar */}
+      <div className="px-3 py-1.5 border-t border-cyan-500/10 bg-slate-950/60 flex items-center gap-2">
+        <span className="text-[9px] text-slate-600">
+          {fileTree.length > 0 ? `${fileTree.length} items` : 'Empty'}
+        </span>
+        {selectedFile && <span className="text-[9px] text-cyan-500/60 truncate ml-auto">{selectedFile}</span>}
+      </div>
+    </div>
+  );
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -111,6 +332,9 @@ export default function JarvisAdvancedUI() {
   const [error, setError] = useState<{ type: 'network' | 'server' | null; message: string }>({ type: null, message: '' });
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [speechLanguage, setSpeechLanguage] = useState<'mr-IN' | 'en-US'>('mr-IN');
+
+  // Workspace Visualizer
+  const [showWorkspace, setShowWorkspace] = useState(false);
 
   // Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -716,13 +940,28 @@ export default function JarvisAdvancedUI() {
       <div className="flex-1 flex flex-col h-full overflow-hidden">
 
         {/* Header */}
-        <header className="flex items-center justify-between px-6 py-4 bg-slate-900/60 border-b border-cyan-500/10 backdrop-blur">
+        <header className="flex items-center justify-between px-4 md:px-6 py-3.5 bg-slate-900/60 border-b border-cyan-500/10 backdrop-blur">
           <div className="flex items-center gap-3">
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden p-2 text-cyan-400 hover:bg-slate-800 rounded-lg border border-cyan-500/20"><Menu size={18} /></button>
             <div className="w-3 h-3 rounded-full bg-cyan-500 animate-pulse shadow-[0_0_10px_#00f0ff]" />
-            <h1 className="text-lg md:text-xl font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">JARVIS // CORE PROTOCOL v2.5</h1>
+            <h1 className="text-base md:text-lg font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">JARVIS // CORE PROTOCOL v2.5</h1>
           </div>
-          <button onClick={clearChat} className="p-2 hover:bg-slate-800/80 rounded-lg border border-cyan-500/20 text-cyan-500 hover:text-cyan-400 transition-all" title="क्लियर चॅट"><RotateCcw size={18} /></button>
+          <div className="flex items-center gap-2">
+            {/* Workspace Toggle Button */}
+            <button
+              onClick={() => setShowWorkspace(w => !w)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-bold tracking-wider transition-all ${
+                showWorkspace
+                  ? 'bg-cyan-950/50 border-cyan-400/60 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.3)]'
+                  : 'bg-slate-900 border-cyan-500/20 text-cyan-500 hover:border-cyan-400/40 hover:text-cyan-400'
+              }`}
+              title="Workspace Visualizer"
+            >
+              <Code size={14} />
+              <span className="hidden md:inline">{showWorkspace ? 'WORKSPACE ✕' : 'WORKSPACE'}</span>
+            </button>
+            <button onClick={clearChat} className="p-2 hover:bg-slate-800/80 rounded-lg border border-cyan-500/20 text-cyan-500 hover:text-cyan-400 transition-all" title="क्लियर चॅट"><RotateCcw size={18} /></button>
+          </div>
         </header>
 
         {/* Messages */}
@@ -799,6 +1038,11 @@ export default function JarvisAdvancedUI() {
           </div>
         </footer>
       </div>
+
+      {/* WORKSPACE VISUALIZER PANEL */}
+      {showWorkspace && (
+        <WorkspacePanel onClose={() => setShowWorkspace(false)} />
+      )}
     </div>
   );
 }

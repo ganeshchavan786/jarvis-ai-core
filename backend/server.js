@@ -730,8 +730,75 @@ app.get('/api/system/status', (req, res) => {
     });
 });
 
+// ─── WORKSPACE VISUALIZER API ──────────────────────────────────────────────────
+
+const WORKSPACE_DIR = path.resolve('./workspace');
+
+// Helper: recursively list files with size + modified time
+function listFilesRecursive(dir, base = '') {
+    const entries = [];
+    let items = [];
+    try { items = fs.readdirSync(dir); } catch { return entries; }
+    for (const item of items) {
+        if (item.startsWith('.')) continue; // skip hidden
+        const fullPath = path.join(dir, item);
+        const relPath = base ? `${base}/${item}` : item;
+        try {
+            const stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+                entries.push({ name: item, path: relPath, type: 'dir', children: listFilesRecursive(fullPath, relPath) });
+            } else {
+                entries.push({ name: item, path: relPath, type: 'file', size: stat.size, modified: stat.mtimeMs });
+            }
+        } catch { /* skip unreadable */ }
+    }
+    return entries;
+}
+
+// GET /api/workspace/files — file tree
+app.get('/api/workspace/files', (req, res) => {
+    try {
+        fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+        const tree = listFilesRecursive(WORKSPACE_DIR);
+        res.json({ tree });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/workspace/file?path=relative/path — read file content
+app.get('/api/workspace/file', (req, res) => {
+    try {
+        const relPath = (req.query.path || '').replace(/\.\./g, '').replace(/^\//, '');
+        if (!relPath) return res.status(400).json({ error: 'path required' });
+        const fullPath = path.join(WORKSPACE_DIR, relPath);
+        if (!fullPath.startsWith(WORKSPACE_DIR)) return res.status(403).json({ error: 'Access denied' });
+        if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const ext = path.extname(relPath).slice(1).toLowerCase();
+        res.json({ path: relPath, content, ext, lines: content.split('\n').length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/workspace/execution-log — last N lines of .execution_log
+app.get('/api/workspace/execution-log', (req, res) => {
+    try {
+        const logPath = path.join(WORKSPACE_DIR, '.execution_log');
+        if (!fs.existsSync(logPath)) return res.json({ log: '' });
+        const content = fs.readFileSync(logPath, 'utf8');
+        const lines = content.split('\n');
+        const last100 = lines.slice(-100).join('\n');
+        res.json({ log: last100 });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Start model download
 app.post('/api/download', (req, res) => {
+
     const { type, url } = req.body;
     if (type !== 'llm' && type !== 'tts') {
         return res.status(400).json({ error: "Invalid type. Use 'llm' or 'tts'." });
