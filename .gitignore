@@ -28,3 +28,7 @@ yarn-error.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Local secrets
+backend/secrets.json
+

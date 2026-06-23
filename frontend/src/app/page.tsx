@@ -5,7 +5,7 @@ import {
   Mic, MicOff, Send, Play, Pause, AlertCircle, Bot, User,
   RotateCcw, Download, Cpu, Activity, CheckCircle, RefreshCw,
   Plus, Trash2, Menu, X, MessageSquare, Search, Calendar, ChevronDown, ChevronRight,
-  FolderOpen, FileCode, Terminal, ChevronUp, Eye, FolderClosed, Code, RefreshCcw
+  FolderOpen, FileCode, Terminal, ChevronUp, Eye, FolderClosed, Code, RefreshCcw, Settings
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -346,6 +346,13 @@ export default function JarvisAdvancedUI() {
   // Collapsed date groups
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
+  // Settings States
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [braveSearchKey, setBraveSearchKey] = useState('');
+  const [githubToken, setGithubToken] = useState('');
+  const [keysStatus, setKeysStatus] = useState({ braveSearchKeyExists: false, githubTokenExists: false });
+  const [isSavingKeys, setIsSavingKeys] = useState(false);
+
   // System Setup States
   const [systemState, setSystemState] = useState<'checking' | 'uninitialized' | 'loading' | 'ready' | 'error'>('checking');
   const [systemErrorMessage, setSystemErrorMessage] = useState('');
@@ -400,6 +407,53 @@ export default function JarvisAdvancedUI() {
       }
     } catch { /* ignore */ }
   }, [checkSystemStatus]);
+
+  // ── Settings Keys Status & Operations ────────────────────────────────────────
+
+  const fetchKeysStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/settings/keys`);
+      if (res.ok) {
+        const data = await res.json();
+        setKeysStatus(data);
+      }
+    } catch (err) {
+      console.error('Error fetching settings keys status:', err);
+    }
+  }, []);
+
+  const saveKeys = async () => {
+    setIsSavingKeys(true);
+    try {
+      const res = await fetch(`${API}/api/settings/keys`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          braveSearchKey: braveSearchKey,
+          githubToken: githubToken
+        })
+      });
+      if (res.ok) {
+        setBraveSearchKey('');
+        setGithubToken('');
+        await fetchKeysStatus();
+        setIsSettingsOpen(false);
+      } else {
+        alert('की सेव्ह करताना त्रुटी आली. कृपया पुन्हा प्रयत्न करा.');
+      }
+    } catch (err) {
+      console.error('Error saving keys:', err);
+      alert('बॅकएंडशी संपर्क साधताना त्रुटी आली.');
+    } finally {
+      setIsSavingKeys(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isSettingsOpen) {
+      fetchKeysStatus();
+    }
+  }, [isSettingsOpen, fetchKeysStatus]);
 
   // ── SQLite History Sync ──────────────────────────────────────────────────────
 
@@ -535,6 +589,7 @@ export default function JarvisAdvancedUI() {
   useEffect(() => {
     loadSessionsFromDB();
     checkSystemStatus();
+    fetchKeysStatus();
     statusPollRef.current = setInterval(checkSystemStatus, 3000);
     return () => {
       if (statusPollRef.current) clearInterval(statusPollRef.current);
@@ -961,6 +1016,7 @@ export default function JarvisAdvancedUI() {
               <span className="hidden md:inline">{showWorkspace ? 'WORKSPACE ✕' : 'WORKSPACE'}</span>
             </button>
             <button onClick={clearChat} className="p-2 hover:bg-slate-800/80 rounded-lg border border-cyan-500/20 text-cyan-500 hover:text-cyan-400 transition-all" title="क्लियर चॅट"><RotateCcw size={18} /></button>
+            <button onClick={() => setIsSettingsOpen(true)} className="p-2 hover:bg-slate-800/80 rounded-lg border border-cyan-500/20 text-cyan-500 hover:text-cyan-400 transition-all" title="सेटिंग्ज (Settings)"><Settings size={18} /></button>
           </div>
         </header>
 
@@ -1038,6 +1094,79 @@ export default function JarvisAdvancedUI() {
           </div>
         </footer>
       </div>
+
+      {/* SETTINGS PANEL MODAL */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4">
+          <div className="glass-panel w-full max-w-md p-6 rounded-2xl border border-cyan-500/20 bg-slate-900/95 shadow-2xl relative text-slate-100">
+            <button onClick={() => setIsSettingsOpen(false)} className="absolute top-4 right-4 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-red-400 transition-colors">
+              <X size={16} />
+            </button>
+            <div className="flex items-center gap-2 mb-6 pb-3 border-b border-cyan-500/10">
+              <Settings size={18} className="text-cyan-400" />
+              <h2 className="text-sm font-bold tracking-widest text-cyan-300">SYSTEM SETTINGS (सेटिंग्ज)</h2>
+            </div>
+            
+            <div className="space-y-5">
+              {/* Brave Search Key Section */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Brave Search API Key</label>
+                  {keysStatus.braveSearchKeyExists ? (
+                    <span className="text-[10px] text-green-400 bg-green-950/40 border border-green-500/20 px-1.5 py-0.5 rounded font-bold">Configured ✅</span>
+                  ) : (
+                    <span className="text-[10px] text-slate-500 bg-slate-800/40 border border-slate-700/20 px-1.5 py-0.5 rounded font-bold">Not Configured ❌</span>
+                  )}
+                </div>
+                <input
+                  type="password"
+                  value={braveSearchKey}
+                  onChange={e => setBraveSearchKey(e.target.value)}
+                  placeholder={keysStatus.braveSearchKeyExists ? "••••••••••••••••" : "Brave API Key एंटर करा..."}
+                  className="w-full bg-slate-950/80 border border-cyan-500/30 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-400 transition-all text-sm"
+                />
+              </div>
+
+              {/* GitHub Token Section */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-slate-300">GitHub Personal Access Token</label>
+                  {keysStatus.githubTokenExists ? (
+                    <span className="text-[10px] text-green-400 bg-green-950/40 border border-green-500/20 px-1.5 py-0.5 rounded font-bold">Configured ✅</span>
+                  ) : (
+                    <span className="text-[10px] text-slate-500 bg-slate-800/40 border border-slate-700/20 px-1.5 py-0.5 rounded font-bold">Not Configured ❌</span>
+                  )}
+                </div>
+                <input
+                  type="password"
+                  value={githubToken}
+                  onChange={e => setGithubToken(e.target.value)}
+                  placeholder={keysStatus.githubTokenExists ? "••••••••••••••••" : "GitHub Token एंटर करा..."}
+                  className="w-full bg-slate-950/80 border border-cyan-500/30 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-400 transition-all text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-8">
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-700 hover:bg-slate-800 text-slate-300 text-xs font-bold transition-all"
+              >
+                रद्द करा (Cancel)
+              </button>
+              <button
+                onClick={saveKeys}
+                disabled={isSavingKeys || (!braveSearchKey.trim() && !githubToken.trim())}
+                className="flex-1 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-bold rounded-xl disabled:opacity-30 disabled:pointer-events-none transition-all"
+              >
+                {isSavingKeys ? "सेव्ह होत आहे..." : "सेव्ह करा (Save)"}
+              </button>
+            </div>
+            
+            <p className="text-[10px] text-slate-500 text-center mt-4">नोंद: कीज सुरक्षितपणे सेव्ह झाल्यावर MCP सर्व्हर्स आपोआप रिलोड होतील.</p>
+          </div>
+        </div>
+      )}
 
       {/* WORKSPACE VISUALIZER PANEL */}
       {showWorkspace && (

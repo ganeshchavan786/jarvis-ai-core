@@ -61,6 +61,21 @@ let mcpClients = {};
 let mcpTools = {};
 let allRegisteredTools = {};
 
+// --- Secrets Management ---
+const SECRETS_PATH = "./secrets.json";
+function getSecret(keyName) {
+    if (fs.existsSync(SECRETS_PATH)) {
+        try {
+            const secrets = JSON.parse(fs.readFileSync(SECRETS_PATH, 'utf8'));
+            return secrets[keyName] || process.env[keyName];
+        } catch {
+            return process.env[keyName];
+        }
+    }
+    return process.env[keyName];
+}
+
+
 // TTS availability
 const piperAvailable = fs.existsSync(PIPER_VOICE_PATH);
 if (piperAvailable) {
@@ -155,6 +170,18 @@ async function initMcpServers() {
         return;
     }
 
+    // Close any existing active connections
+    for (const [serverName, client] of Object.entries(mcpClients)) {
+        console.log(`🔌 Closing active connection to MCP Server: ${serverName}...`);
+        try {
+            await client.close();
+        } catch (err) {
+            console.error(`⚠️ Error closing MCP client [${serverName}]:`, err.message);
+        }
+    }
+    mcpClients = {};
+    mcpTools = {};
+
     try {
         const configData = JSON.parse(await fs.promises.readFile(configPath, 'utf8'));
         const servers = configData.mcpServers || {};
@@ -162,10 +189,19 @@ async function initMcpServers() {
         for (const [serverName, serverConfig] of Object.entries(servers)) {
             console.log(`🔌 Connecting to MCP Server: ${serverName}...`);
             try {
+                // Load environments dynamically overriding with secrets
+                const serverEnv = { ...process.env };
+                if (serverConfig.env) {
+                    for (const [key, value] of Object.entries(serverConfig.env)) {
+                        const secretVal = getSecret(key);
+                        serverEnv[key] = secretVal || value;
+                    }
+                }
+
                 const transport = new StdioClientTransport({
                     command: serverConfig.command,
                     args: serverConfig.args || [],
-                    env: { ...process.env, ...(serverConfig.env || {}) }
+                    env: serverEnv
                 });
 
                 const client = new Client(
@@ -1000,6 +1036,67 @@ app.get('/api/history/search', (req, res) => {
         `).all(keyword);
         res.json({ results: rows });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+// GET /api/settings/keys — check if keys exist
+app.get('/api/settings/keys', (req, res) => {
+    try {
+        let braveSearchKeyExists = false;
+        let githubTokenExists = false;
+        if (fs.existsSync(SECRETS_PATH)) {
+            const secrets = JSON.parse(fs.readFileSync(SECRETS_PATH, 'utf8'));
+            braveSearchKeyExists = !!secrets.BRAVE_API_KEY;
+            githubTokenExists = !!secrets.GITHUB_PERSONAL_ACCESS_TOKEN;
+        }
+        res.json({ braveSearchKeyExists, githubTokenExists });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/settings/keys — save keys and re-initialize MCP
+app.post('/api/settings/keys', async (req, res) => {
+    try {
+        const { braveSearchKey, githubToken } = req.body;
+        
+        let secrets = {};
+        if (fs.existsSync(SECRETS_PATH)) {
+            try {
+                secrets = JSON.parse(fs.readFileSync(SECRETS_PATH, 'utf8'));
+            } catch {
+                secrets = {};
+            }
+        }
+        
+        if (braveSearchKey !== undefined) {
+            if (braveSearchKey.trim() === '') {
+                delete secrets.BRAVE_API_KEY;
+            } else {
+                secrets.BRAVE_API_KEY = braveSearchKey.trim();
+            }
+        }
+        
+        if (githubToken !== undefined) {
+            if (githubToken.trim() === '') {
+                delete secrets.GITHUB_PERSONAL_ACCESS_TOKEN;
+            } else {
+                secrets.GITHUB_PERSONAL_ACCESS_TOKEN = githubToken.trim();
+            }
+        }
+        
+        fs.writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2), 'utf8');
+        console.log("🔑 Secrets saved successfully. Reinitializing MCP servers...");
+        
+        // Dynamic reinitialization
+        await initMcpServers();
+        compileAllTools();
+        
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("❌ Error saving settings keys:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
