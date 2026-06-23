@@ -24,7 +24,8 @@ services:
         chmod +x /usr/local/bin/piper &&
         cp piper/lib*.so* /usr/local/lib/ &&
         cp piper/espeak-ng /usr/local/bin/ &&
-        cp -r piper/espeak-ng-data /usr/lib/ &&
+        mkdir -p /usr/share/espeak-ng-data &&
+        cp -r piper/espeak-ng-data/* /usr/share/espeak-ng-data/ &&
         ldconfig &&
         echo '✅ Piper TTS इंस्टॉल पूर्ण झाले!';
       fi &&
