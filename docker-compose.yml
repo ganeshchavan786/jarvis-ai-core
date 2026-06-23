@@ -14,6 +14,21 @@ services:
     command: >
       sh -c "
       apt-get update && apt-get install -y wget &&
+      if ! command -v piper >/dev/null 2>&1; then
+        echo '⬇️ Piper TTS container मध्ये इंस्टॉल करत आहे...';
+        apt-get install -y libespeak-ng1 &&
+        cd /tmp &&
+        wget -q https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz &&
+        tar -xzf piper_linux_x86_64.tar.gz &&
+        cp piper/piper /usr/local/bin/ &&
+        chmod +x /usr/local/bin/piper &&
+        cp piper/lib*.so* /usr/local/lib/ &&
+        cp piper/espeak-ng /usr/local/bin/ &&
+        cp -r piper/espeak-ng-data /usr/lib/ &&
+        ldconfig &&
+        echo '✅ Piper TTS इंस्टॉल पूर्ण झाले!';
+      fi &&
+      cd /app &&
       mkdir -p models &&
       if [ ! -f models/qwen2.5-7b-instruct-q4_k_m.gguf ]; then
         echo '⬇️ Qwen-7B Model नाहीये, डाउनलोड सुरू होत आहे... याला इंटरनेट स्पीडनुसार ५-१५ मिनिटे लागू शकतात...';
