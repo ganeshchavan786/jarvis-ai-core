@@ -641,7 +641,7 @@ async function initJarvisMinds() {
         model = await llama.loadModel({ modelPath: LLM_PATH });
 
         console.log("✅ Model loaded! Creating context...");
-        context = await model.createContext({ contextSize: 2048 });
+        context = await model.createContext({ contextSize: 4096 });
 
         chatSession = new LlamaChatSession({
             contextSequence: context.getSequence(),
@@ -814,13 +814,29 @@ app.post('/api/jarvis', async (req, res) => {
 
     try {
         console.log(`💬 User: ${prompt}`);
-        
-        // Call the LLM prompt with functions
-        const responseText = await chatSession.prompt(prompt, {
-            functions: Object.keys(allRegisteredTools).length > 0 ? allRegisteredTools : undefined
-        });
-        
-        console.log(`🤖 Jarvis: ${responseText.substring(0, 100)}...`);
+
+        // Fix 1: Retry without tools if LLM returns empty output
+        let responseText;
+        try {
+            responseText = await chatSession.prompt(prompt, {
+                functions: Object.keys(allRegisteredTools).length > 0 ? allRegisteredTools : undefined
+            });
+        } catch (innerErr) {
+            if (innerErr.message?.includes('model output must contain')) {
+                console.warn('⚠️ Empty model output with tools — retrying without tools...');
+                responseText = await chatSession.prompt(prompt);
+            } else {
+                throw innerErr;
+            }
+        }
+
+        // Fix 2: Final safety check — never return empty response
+        if (!responseText || !responseText.trim()) {
+            responseText = "मला नक्की समजले नाही. कृपया वेगळ्या प्रकारे विचारा.";
+        }
+
+        // Fix 3: null-safe logging
+        console.log(`🤖 Jarvis: ${(responseText || '').substring(0, 100)}...`);
 
         // Generate audio with Piper TTS (returns null if not available)
         const audioDataUrl = await synthesizeSpeech(responseText);
