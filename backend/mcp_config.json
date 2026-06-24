@@ -1,31 +1,35 @@
 {
   "mcpServers": {
-    "everything": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-everything"
-      ]
-    },
     "brave-search": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-brave-search"
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
       "env": {
         "BRAVE_API_KEY": "YOUR_BRAVE_API_KEY_HERE"
-      }
+      },
+      "_comment": "Get free API key: https://brave.com/search/api/"
+    },
+    "puppeteer": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+      "_comment": "Web browsing + screenshots. Needs: apt install chromium-browser"
     },
     "github": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "YOUR_GITHUB_TOKEN_HERE"
-      }
+      },
+      "_comment": "Jarvis can push code, create branches, open PRs on GitHub"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"],
+      "_comment": "Direct filesystem access within workspace folder"
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "_comment": "Persistent key-value memory for Jarvis across sessions"
     }
   }
 }

@@ -12,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const execPromise = util.promisify(exec);
+const PORT = 8000;
 
 // --- SQLite Chat History DB Setup ---
 const db = new Database('./chat_history.db');
@@ -39,12 +40,33 @@ console.log("✅ SQLite chat history DB initialized.");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Model Paths
 const LLM_PATH = "./models/qwen2.5-7b-instruct-q4_k_m.gguf";
 const TTS_PATH = "./models/supertonic-turbo.gguf";
 const PIPER_VOICE_PATH = "./tts_voices/en_US-amy-medium.onnx";
+const WHISPER_MODEL_PATH = "./models/whisper/ggml-base.bin";
+
+// ── RAG: SQLite Vector Memory (sqlite-vss / simple cosine fallback) ──────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memory_docs (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_source ON memory_docs(source);
+  CREATE TABLE IF NOT EXISTS memory_kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+console.log("✅ RAG memory tables initialized.");
 
 // Engine instances
 let llama = null;
@@ -147,7 +169,324 @@ function synthesizeSpeech(text) {
     });
 }
 
-// --- MCP Servers Initialization ---
+// ═══════════════════════════════════════════════════════════════════════════
+// 🎤 FEATURE 2: Whisper Local STT — 100% Offline Speech-to-Text
+// ═══════════════════════════════════════════════════════════════════════════
+
+// POST /api/stt — receives base64 audio, returns transcribed text via whisper.cpp
+app.post('/api/stt', async (req, res) => {
+    try {
+        const { audio_base64, language = 'auto' } = req.body;
+        if (!audio_base64) return res.status(400).json({ error: 'audio_base64 required' });
+
+        // Check if whisper model exists
+        if (!fs.existsSync(WHISPER_MODEL_PATH)) {
+            return res.status(503).json({
+                error: 'Whisper model not found',
+                hint: `Download: wget -P ./models/whisper https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin`,
+                fallback: true
+            });
+        }
+
+        // Save incoming audio to temp file
+        const tmpAudio = path.join(os.tmpdir(), `jarvis_stt_${Date.now()}.wav`);
+        const audioBuffer = Buffer.from(audio_base64.replace(/^data:audio\/\w+;base64,/, ''), 'base64');
+        await fs.promises.writeFile(tmpAudio, audioBuffer);
+
+        // Run whisper.cpp (must be installed: apt install whisper.cpp or compiled)
+        const langFlag = language !== 'auto' ? `-l ${language}` : '';
+        const whisperCmd = `whisper-cpp -m ${WHISPER_MODEL_PATH} -f ${tmpAudio} ${langFlag} --output-txt -np`;
+
+        const { stdout } = await execPromise(whisperCmd, { timeout: 30000 });
+        await fs.promises.unlink(tmpAudio).catch(() => {});
+
+        // whisper.cpp outputs text with timestamps — extract clean text
+        const lines = stdout.split('\n')
+            .map(l => l.replace(/\[\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\]\s*/g, '').trim())
+            .filter(Boolean);
+        const transcript = lines.join(' ').trim();
+        console.log(`🎤 Whisper STT: "${transcript}"`);
+        res.json({ text: transcript, language });
+    } catch (err) {
+        console.error('Whisper STT error:', err.message);
+        res.status(500).json({ error: err.message, fallback: true });
+    }
+});
+
+// GET /api/stt/status — whisper model status check
+app.get('/api/stt/status', (req, res) => {
+    const modelExists = fs.existsSync(WHISPER_MODEL_PATH);
+    res.json({
+        whisper_ready: modelExists,
+        model_path: WHISPER_MODEL_PATH,
+        hint: modelExists ? null : 'Download ggml-base.bin from HuggingFace ggerganov/whisper.cpp'
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 💾 FEATURE 3: RAG — Long-Term Vector Memory
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Simple cosine similarity (no external dep needed)
+function cosineSimilarity(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, magA = 0, magB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        magA += a[i] * a[i];
+        magB += b[i] * b[i];
+    }
+    return dot / (Math.sqrt(magA) * Math.sqrt(magB) + 1e-10);
+}
+
+// Keyword-based TF-IDF style embedding (offline, no model needed)
+function simpleEmbed(text, vocabSize = 256) {
+    const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/);
+    const vec = new Array(vocabSize).fill(0);
+    for (const word of words) {
+        let hash = 0;
+        for (const ch of word) hash = (hash * 31 + ch.charCodeAt(0)) % vocabSize;
+        vec[hash] += 1;
+    }
+    // L2 normalize
+    const mag = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) + 1e-10;
+    return vec.map(v => v / mag);
+}
+
+// POST /api/memory/ingest — add document chunks to memory
+app.post('/api/memory/ingest', async (req, res) => {
+    try {
+        const { source, content } = req.body;
+        if (!source || !content) return res.status(400).json({ error: 'source and content required' });
+
+        // Split into ~300 word chunks
+        const words = content.split(/\s+/);
+        const CHUNK_SIZE = 300;
+        const chunks = [];
+        for (let i = 0; i < words.length; i += CHUNK_SIZE) {
+            chunks.push(words.slice(i, i + CHUNK_SIZE).join(' '));
+        }
+
+        const now = Date.now();
+        const insertChunk = db.prepare(
+            'INSERT OR REPLACE INTO memory_docs (id, source, chunk_index, content, embedding, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        );
+
+        for (let i = 0; i < chunks.length; i++) {
+            const embedding = simpleEmbed(chunks[i]);
+            insertChunk.run(`${source}_${i}`, source, i, chunks[i], JSON.stringify(embedding), now);
+        }
+
+        res.json({ ok: true, source, chunks_stored: chunks.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/memory/search?q=... — semantic search in memory
+app.get('/api/memory/search', (req, res) => {
+    try {
+        const { q, limit = 5 } = req.query;
+        if (!q) return res.json({ results: [] });
+
+        const queryEmbed = simpleEmbed(String(q));
+        const all = db.prepare('SELECT id, source, chunk_index, content, embedding FROM memory_docs').all();
+
+        const scored = all.map(doc => {
+            const docEmbed = doc.embedding ? JSON.parse(doc.embedding) : [];
+            return { ...doc, score: cosineSimilarity(queryEmbed, docEmbed) };
+        }).sort((a, b) => b.score - a.score).slice(0, Number(limit));
+
+        res.json({ results: scored.map(r => ({ source: r.source, chunk_index: r.chunk_index, content: r.content, score: r.score.toFixed(4) })) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/memory/sources — list all ingested sources
+app.get('/api/memory/sources', (req, res) => {
+    try {
+        const sources = db.prepare(
+            'SELECT source, COUNT(*) as chunks, MAX(created_at) as last_updated FROM memory_docs GROUP BY source ORDER BY last_updated DESC'
+        ).all();
+        res.json({ sources });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// DELETE /api/memory/sources/:source — remove a document from memory
+app.delete('/api/memory/sources/:source', (req, res) => {
+    try {
+        db.prepare('DELETE FROM memory_docs WHERE source = ?').run(req.params.source);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// KV Memory — GET/SET key-value pairs for Jarvis long-term facts
+app.get('/api/memory/kv/:key', (req, res) => {
+    try {
+        const row = db.prepare('SELECT value FROM memory_kv WHERE key = ?').get(req.params.key);
+        res.json({ key: req.params.key, value: row ? row.value : null });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/memory/kv', (req, res) => {
+    try {
+        const { key, value } = req.body;
+        db.prepare('INSERT OR REPLACE INTO memory_kv (key, value, updated_at) VALUES (?, ?, ?)').run(key, String(value), Date.now());
+        res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 📊 FEATURE 4: Workspace Visualizer API (Live file tree + content)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const WORKSPACE_DIR = "./workspace";
+
+// GET /api/workspace/tree — full file tree with metadata
+app.get('/api/workspace/tree', async (req, res) => {
+    try {
+        await fs.promises.mkdir(WORKSPACE_DIR, { recursive: true });
+
+        async function buildTree(dir, base = '') {
+            const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+            const nodes = [];
+            for (const e of entries) {
+                if (e.name.startsWith('.')) continue; // skip hidden files
+                const relPath = base ? `${base}/${e.name}` : e.name;
+                if (e.isDirectory()) {
+                    nodes.push({ name: e.name, path: relPath, type: 'dir', children: await buildTree(path.join(dir, e.name), relPath) });
+                } else {
+                    const stat = await fs.promises.stat(path.join(dir, e.name));
+                    nodes.push({ name: e.name, path: relPath, type: 'file', size: stat.size, modified: stat.mtime.toISOString() });
+                }
+            }
+            return nodes.sort((a, b) => (a.type === 'dir' ? -1 : 1) || a.name.localeCompare(b.name));
+        }
+
+        const tree = await buildTree(WORKSPACE_DIR);
+        res.json({ tree });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/workspace/file?path=src/app.py — read file content
+app.get('/api/workspace/file', async (req, res) => {
+    try {
+        const filePath = req.query.path;
+        if (!filePath) return res.status(400).json({ error: 'path required' });
+        const safePath = String(filePath).replace(/\.\./g, '').replace(/^\//, '');
+        const fullPath = path.join(WORKSPACE_DIR, safePath);
+        if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+        const content = await fs.promises.readFile(fullPath, 'utf8');
+        res.json({ path: safePath, content, size: content.length, lines: content.split('\n').length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/workspace/log — execution log
+app.get('/api/workspace/log', async (req, res) => {
+    try {
+        const logPath = path.join(WORKSPACE_DIR, '.execution_log');
+        if (!fs.existsSync(logPath)) return res.json({ log: '', entries: 0 });
+        const content = await fs.promises.readFile(logPath, 'utf8');
+        const lines = content.trim().split('\n').filter(Boolean);
+        res.json({ log: lines.slice(-50).join('\n'), entries: lines.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🤖 FEATURE 5: Multi-Agent System
+// Supervisor Jarvis can spawn sub-agents for parallel tasks
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Active sub-agent tasks store (in-memory)
+const subAgentTasks = new Map();
+
+// POST /api/agent/spawn — create a sub-agent task
+app.post('/api/agent/spawn', async (req, res) => {
+    try {
+        const { task, agent_type = 'coder', context: ctx = '' } = req.body;
+        if (!task) return res.status(400).json({ error: 'task required' });
+        if (systemStatus !== 'ready') return res.status(503).json({ error: 'Jarvis not ready' });
+
+        const taskId = `agent_${Date.now()}`;
+        subAgentTasks.set(taskId, { id: taskId, task, agent_type, status: 'running', result: null, created_at: Date.now() });
+
+        // Run sub-agent in background
+        (async () => {
+            try {
+                // Each sub-agent gets its own context (lightweight)
+                const agentContext = await model.createContext({ contextSize: 1024 });
+                const agentPrompts = {
+                    coder: `You are a coding sub-agent. Your ONLY job: complete the coding task and return the result concisely. Task: ${task}${ctx ? `\nContext: ${ctx}` : ''}`,
+                    reviewer: `You are a code reviewer sub-agent. Review for bugs, security issues, and best practices. Task: ${task}${ctx ? `\nCode to review:\n${ctx}` : ''}`,
+                    researcher: `You are a research sub-agent. Summarize facts and key points concisely. Topic: ${task}`,
+                    tester: `You are a QA testing sub-agent. Write test cases and identify edge cases. Task: ${task}${ctx ? `\nCode to test:\n${ctx}` : ''}`
+                };
+
+                const agentSession = new LlamaChatSession({
+                    contextSequence: agentContext.getSequence(),
+                    systemPrompt: agentPrompts[agent_type] || agentPrompts.coder
+                });
+
+                const result = await agentSession.prompt(task);
+                agentContext.dispose();
+
+                subAgentTasks.set(taskId, {
+                    ...subAgentTasks.get(taskId),
+                    status: 'done',
+                    result,
+                    completed_at: Date.now()
+                });
+                console.log(`✅ Sub-agent [${agent_type}] task ${taskId} done.`);
+            } catch (err) {
+                subAgentTasks.set(taskId, {
+                    ...subAgentTasks.get(taskId),
+                    status: 'error',
+                    result: err.message
+                });
+            }
+        })();
+
+        res.json({ taskId, status: 'running', message: `Sub-agent [${agent_type}] spawned for: "${task.substring(0, 60)}"` });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/agent/status/:taskId — poll sub-agent result
+app.get('/api/agent/status/:taskId', (req, res) => {
+    const task = subAgentTasks.get(req.params.taskId);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    res.json(task);
+});
+
+// GET /api/agent/tasks — list all sub-agent tasks
+app.get('/api/agent/tasks', (req, res) => {
+    const tasks = Array.from(subAgentTasks.values())
+        .sort((a, b) => b.created_at - a.created_at)
+        .slice(0, 20);
+    res.json({ tasks });
+});
+
+// DELETE /api/agent/tasks — clear completed tasks
+app.delete('/api/agent/tasks', (req, res) => {
+    for (const [id, task] of subAgentTasks.entries()) {
+        if (task.status !== 'running') subAgentTasks.delete(id);
+    }
+    res.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 async function initMcpServers() {
     const configPath = "./mcp_config.json";
     if (!fs.existsSync(configPath)) {
@@ -599,7 +938,104 @@ function compileAllTools() {
             }
         }),
 
-        // ── LEVEL 3: get_execution_log ───────────────────────────────────
+        // ── FEATURE 3: RAG Memory Tools ─────────────────────────────────
+        memory_search: defineChatSessionFunction({
+            description: "Search Jarvis's long-term document memory for relevant information. Use when user asks about documents they previously uploaded.",
+            params: {
+                type: "object",
+                properties: {
+                    query: { type: "string", description: "What to search for in memory." },
+                    limit: { type: "number", description: "Max results (default 5)." }
+                },
+                required: ["query"]
+            },
+            handler: async ({ query, limit = 5 }) => {
+                const queryEmbed = simpleEmbed(query);
+                const all = db.prepare('SELECT id, source, content, embedding FROM memory_docs').all();
+                const scored = all.map(doc => ({
+                    source: doc.source,
+                    content: doc.content,
+                    score: cosineSimilarity(queryEmbed, doc.embedding ? JSON.parse(doc.embedding) : [])
+                })).sort((a, b) => b.score - a.score).slice(0, limit);
+                return scored.length > 0 ? { results: scored } : { message: "No relevant memory found." };
+            }
+        }),
+
+        memory_remember: defineChatSessionFunction({
+            description: "Save an important fact or user preference to long-term memory.",
+            params: {
+                type: "object",
+                properties: {
+                    key: { type: "string", description: "Unique key (e.g. 'user_name', 'preferred_language')" },
+                    value: { type: "string", description: "Value to remember." }
+                },
+                required: ["key", "value"]
+            },
+            handler: async ({ key, value }) => {
+                db.prepare('INSERT OR REPLACE INTO memory_kv (key, value, updated_at) VALUES (?, ?, ?)').run(key, value, Date.now());
+                return { ok: true, message: `Remembered: ${key} = ${value}` };
+            }
+        }),
+
+        memory_recall: defineChatSessionFunction({
+            description: "Recall a fact previously saved to long-term memory by key.",
+            params: {
+                type: "object",
+                properties: {
+                    key: { type: "string", description: "Key to recall." }
+                },
+                required: ["key"]
+            },
+            handler: async ({ key }) => {
+                const row = db.prepare('SELECT value FROM memory_kv WHERE key = ?').get(key);
+                return row ? { key, value: row.value } : { message: `No memory found for key: ${key}` };
+            }
+        }),
+
+        // ── FEATURE 5: Multi-Agent Tools ────────────────────────────────
+        spawn_sub_agent: defineChatSessionFunction({
+            description: "Spawn a specialized sub-agent to work on a task in parallel. Agent types: 'coder', 'reviewer', 'researcher', 'tester'. Returns a taskId to check results later.",
+            params: {
+                type: "object",
+                properties: {
+                    task: { type: "string", description: "What the sub-agent should do." },
+                    agent_type: { type: "string", enum: ["coder", "reviewer", "researcher", "tester"], description: "Type of sub-agent." },
+                    context: { type: "string", description: "Optional context (e.g. code to review)." }
+                },
+                required: ["task", "agent_type"]
+            },
+            handler: async ({ task, agent_type, context: ctx = '' }) => {
+                try {
+                    const res = await fetch(`http://localhost:${PORT}/api/agent/spawn`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ task, agent_type, context: ctx })
+                    });
+                    return await res.json();
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }
+        }),
+
+        check_sub_agent: defineChatSessionFunction({
+            description: "Check the status and result of a previously spawned sub-agent task.",
+            params: {
+                type: "object",
+                properties: {
+                    taskId: { type: "string", description: "Task ID returned from spawn_sub_agent." }
+                },
+                required: ["taskId"]
+            },
+            handler: async ({ taskId }) => {
+                try {
+                    const res = await fetch(`http://localhost:${PORT}/api/agent/status/${taskId}`);
+                    return await res.json();
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }
+        }),
         get_execution_log: defineChatSessionFunction({
             description: "Read the execution history log of all commands run in the workspace session.",
             handler: async () => {
@@ -645,26 +1081,34 @@ async function initJarvisMinds() {
 
         chatSession = new LlamaChatSession({
             contextSequence: context.getSequence(),
-            systemPrompt: `You are Jarvis, a highly advanced AI coding assistant and system agent. You have a full coding workspace at your disposal.
+            systemPrompt: `You are Jarvis v3.0 — a highly advanced AI supervisor agent with a full coding workspace, long-term memory, and multi-agent capabilities.
 
-CODING AGENT TOOLS (use in this order for coding tasks):
-1. list_workspace_files — see what files exist (includes subdirs + sizes)
-2. write_code_file — create new files (supports subdirs like 'src/app.py')
-3. patch_code_file — edit specific parts of a file without rewriting it all
-4. read_code_file — read files with line numbers (always do this before patching)
-5. execute_code_command — run code (python3, node, bash). Auto-detects runtime.
-6. install_package — install npm or pip packages when needed
-7. search_in_files — search keyword across all workspace files
+━━━ CODING TOOLS (use in order) ━━━
+1. list_workspace_files — recursive file tree with sizes
+2. write_code_file — create files (supports subdirs: src/utils/app.py)
+3. patch_code_file — edit specific lines (use BEFORE rewriting whole file)
+4. read_code_file — read with line numbers (do this before patching)
+5. execute_code_command — run code. Auto-detects runtime from extension.
+6. install_package — npm or pip install
+7. search_in_files — keyword search across workspace
 8. delete_file — remove files
-9. get_execution_log — see history of all commands run
+9. get_execution_log — command history
 
-AUTO-DEBUG RULE: If execute_code_command returns an error, you MUST:
-  a) Read the error carefully
-  b) Read the failing file with read_code_file
-  c) Fix it using patch_code_file
-  d) Run execute_code_command again (up to 3 retries before asking user)
+━━━ MEMORY TOOLS ━━━
+10. memory_search — semantic search in long-term document memory
+11. memory_remember — save a fact: key=value (user prefs, important info)
+12. memory_recall — recall a saved fact by key
 
-Keep answers concise. Use markdown. Always explain what tool you called and why.`
+━━━ MULTI-AGENT TOOLS ━━━
+13. spawn_sub_agent — create a specialized sub-agent (coder/reviewer/researcher/tester)
+14. check_sub_agent — poll result of a spawned sub-agent
+
+━━━ RULES ━━━
+AUTO-DEBUG: If code fails → read error → patch_code_file → retry (max 3x before asking user)
+MULTI-AGENT: For complex tasks, spawn a reviewer or tester sub-agent after coding.
+MEMORY: If user mentions a preference or important fact, use memory_remember to save it.
+
+Keep answers concise. Use markdown. Explain what tool you called and why.`
         });
 
         systemStatus = 'ready';
