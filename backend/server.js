@@ -487,7 +487,70 @@ app.delete('/api/agent/tasks', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ⚙️  SETTINGS API — read/write API keys & config from UI
+// ═══════════════════════════════════════════════════════════════════════════
+const SETTINGS_PATH = './settings.json';
+
+function loadSettings() {
+    try {
+        if (fs.existsSync(SETTINGS_PATH)) {
+            return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+        }
+    } catch (_) {}
+    return { braveApiKey: '', githubToken: '', whisperLang: 'hi', ragEnabled: true };
+}
+
+function saveSettings(data) {
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(data, null, 2), 'utf8');
+}
+
+// GET /api/settings — return current settings (keys masked)
+app.get('/api/settings', (req, res) => {
+    const s = loadSettings();
+    res.json({
+        braveApiKey:  s.braveApiKey  ? s.braveApiKey.slice(0,6)  + '****' + s.braveApiKey.slice(-4)  : '',
+        braveApiKeySet: !!s.braveApiKey,
+        githubToken:  s.githubToken  ? s.githubToken.slice(0,6)  + '****' + s.githubToken.slice(-4)  : '',
+        githubTokenSet: !!s.githubToken,
+        whisperLang:  s.whisperLang  || 'hi',
+        ragEnabled:   s.ragEnabled !== false,
+    });
+});
+
+// POST /api/settings — save new settings & update mcp_config.json
+app.post('/api/settings', async (req, res) => {
+    try {
+        const prev = loadSettings();
+        const updated = {
+            braveApiKey:  req.body.braveApiKey  !== undefined ? req.body.braveApiKey.trim()  : prev.braveApiKey,
+            githubToken:  req.body.githubToken  !== undefined ? req.body.githubToken.trim()  : prev.githubToken,
+            whisperLang:  req.body.whisperLang  !== undefined ? req.body.whisperLang         : prev.whisperLang,
+            ragEnabled:   req.body.ragEnabled   !== undefined ? !!req.body.ragEnabled        : prev.ragEnabled,
+        };
+        saveSettings(updated);
+
+        // Update mcp_config.json with real keys
+        const mcpConfigPath = './mcp_config.json';
+        if (fs.existsSync(mcpConfigPath)) {
+            const mcp = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8'));
+            if (mcp.mcpServers['brave-search']) {
+                mcp.mcpServers['brave-search'].env = { BRAVE_API_KEY: updated.braveApiKey || 'YOUR_BRAVE_API_KEY_HERE' };
+            }
+            if (mcp.mcpServers['github']) {
+                mcp.mcpServers['github'].env = { GITHUB_PERSONAL_ACCESS_TOKEN: updated.githubToken || 'YOUR_GITHUB_TOKEN_HERE' };
+            }
+            fs.writeFileSync(mcpConfigPath, JSON.stringify(mcp, null, 2), 'utf8');
+        }
+
+        res.json({ ok: true, message: 'Settings saved! MCP config updated. Restart backend to activate new keys.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 async function initMcpServers() {
+
     const configPath = "./mcp_config.json";
     if (!fs.existsSync(configPath)) {
         console.log("ℹ️ No mcp_config.json found. Skipping MCP initialization.");

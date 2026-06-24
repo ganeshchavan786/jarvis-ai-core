@@ -287,6 +287,13 @@ export default function JarvisAdvancedUI() {
   // System info for status bar
   const [systemInfo, setSystemInfo] = useState<any>(null);
 
+  // ⚙️ SETTINGS
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsData, setSettingsData] = useState({ braveApiKey: '', githubToken: '', whisperLang: 'hi', ragEnabled: true, braveApiKeySet: false, githubTokenSet: false });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMsg, setSettingsMsg] = useState('');
+  const [settingsForm, setSettingsForm] = useState({ braveApiKey: '', githubToken: '', whisperLang: 'hi', ragEnabled: true });
+
   // Search
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -494,6 +501,31 @@ export default function JarvisAdvancedUI() {
       finally { setIsSearching(false); }
     }, 400);
   }, [searchQuery, showSearch]);
+
+  // ⚙️ Load settings on mount
+  useEffect(() => {
+    fetch(`${API}/api/settings`).then(r => r.json()).then(d => {
+      setSettingsData(d);
+      setSettingsForm({ braveApiKey: '', githubToken: '', whisperLang: d.whisperLang || 'hi', ragEnabled: d.ragEnabled !== false });
+    }).catch(() => {});
+  }, []);
+
+  const saveSettingsHandler = async () => {
+    setSettingsSaving(true); setSettingsMsg('');
+    try {
+      const body: any = { whisperLang: settingsForm.whisperLang, ragEnabled: settingsForm.ragEnabled };
+      if (settingsForm.braveApiKey) body.braveApiKey = settingsForm.braveApiKey;
+      if (settingsForm.githubToken) body.githubToken = settingsForm.githubToken;
+      const r = await fetch(`${API}/api/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json();
+      if (d.ok) {
+        setSettingsMsg('✅ Settings saved! Backend restart केल्यावर keys active होतील.');
+        setSettingsForm(f => ({ ...f, braveApiKey: '', githubToken: '' }));
+        fetch(`${API}/api/settings`).then(r2 => r2.json()).then(setSettingsData).catch(() => {});
+      } else { setSettingsMsg('❌ Error: ' + (d.error || 'Unknown')); }
+    } catch { setSettingsMsg('❌ Server connect झाला नाही.'); }
+    setSettingsSaving(false);
+  };
 
   // FEATURE 2: Check Whisper status on load
   useEffect(() => {
@@ -1039,16 +1071,22 @@ export default function JarvisAdvancedUI() {
                 <FolderOpen size={15} />
               </button>
               {/* FEATURE 5: Multi-Agent button */}
-              <button onClick={() => { setShowAgentPanel(s => !s); setShowWorkspace(false); setShowMemoryPanel(false); }}
+              <button onClick={() => { setShowAgentPanel(s => !s); setShowWorkspace(false); setShowMemoryPanel(false); setShowSettings(false); }}
                 className={`p-2 rounded-lg border text-xs font-bold transition-all ${showAgentPanel ? 'bg-blue-950/50 border-blue-500/40 text-blue-400' : (isDark ? 'bg-slate-800 border-violet-500/20 text-slate-400 hover:text-blue-400' : 'bg-violet-100 border-violet-300 text-violet-500')}`}
                 title="Multi-Agent Panel">
                 <GitBranch size={15} />
               </button>
               {/* FEATURE 3: Memory button */}
-              <button onClick={() => { setShowMemoryPanel(s => !s); setShowWorkspace(false); setShowAgentPanel(false); }}
+              <button onClick={() => { setShowMemoryPanel(s => !s); setShowWorkspace(false); setShowAgentPanel(false); setShowSettings(false); }}
                 className={`p-2 rounded-lg border text-xs font-bold transition-all ${showMemoryPanel ? 'bg-amber-950/50 border-amber-500/40 text-amber-400' : (isDark ? 'bg-slate-800 border-violet-500/20 text-slate-400 hover:text-amber-400' : 'bg-violet-100 border-violet-300 text-violet-500')}`}
                 title="RAG Memory">
                 <Brain size={15} />
+              </button>
+              {/* ⚙️ Settings button */}
+              <button onClick={() => { setShowSettings(s => !s); setShowWorkspace(false); setShowAgentPanel(false); setShowMemoryPanel(false); }}
+                className={`p-2 rounded-lg border text-xs font-bold transition-all ${showSettings ? 'bg-violet-700/40 border-violet-400/60 text-violet-300' : (isDark ? 'bg-slate-800 border-violet-500/20 text-slate-400 hover:text-violet-300' : 'bg-violet-100 border-violet-300 text-violet-500')}`}
+                title="Settings / API Keys">
+                <Wrench size={15} />
               </button>
               <button onClick={toggleTheme} className={`p-2 rounded-lg border transition-all ${isDark ? 'bg-slate-800 border-violet-500/20 text-violet-400 hover:text-yellow-300' : 'bg-violet-100 border-violet-300 text-violet-600 hover:text-yellow-600'}`} title="Theme बदला">
                 {isDark ? <Sun size={15} /> : <Moon size={15} />}
@@ -1058,6 +1096,113 @@ export default function JarvisAdvancedUI() {
               </button>
             </div>
           </header>
+
+          {/* ⚙️ SETTINGS PANEL */}
+          {showSettings && (
+            <div className={`border-b overflow-y-auto ${isDark ? 'bg-slate-950/90 border-violet-500/20' : 'bg-violet-50 border-violet-200'}`} style={{ maxHeight: '380px' }}>
+              <div className={`flex items-center gap-2 px-4 py-2 border-b text-xs font-bold ${isDark ? 'border-violet-500/20 text-violet-300' : 'border-violet-200 text-violet-700'}`}>
+                <Wrench size={13} />
+                <span>SETTINGS — API KEYS & CONFIG</span>
+                <span className="ml-auto text-[10px] opacity-50">Settings सुरक्षितपणे server वर save होतात</span>
+              </div>
+              <div className="p-4 grid md:grid-cols-2 gap-4">
+
+                {/* Brave Search */}
+                <div className={`rounded-xl border p-4 space-y-3 ${isDark ? 'bg-slate-900/60 border-orange-500/20' : 'bg-orange-50 border-orange-200'}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🌐</span>
+                    <div>
+                      <p className={`text-xs font-bold tracking-wider ${isDark ? 'text-orange-400' : 'text-orange-700'}`}>BRAVE SEARCH API KEY</p>
+                      <p className="text-[10px] opacity-50">Internet search साठी — brave.com/search/api/ वर free मिळतो</p>
+                    </div>
+                    {settingsData.braveApiKeySet && <span className="ml-auto text-[10px] bg-emerald-900/40 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">✅ Set</span>}
+                  </div>
+                  {settingsData.braveApiKeySet && <p className={`text-[10px] font-mono ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Current: {settingsData.braveApiKey}</p>}
+                  <input
+                    type="password"
+                    placeholder={settingsData.braveApiKeySet ? 'नवीन key टाका (बदलायची असेल तर)' : 'BSA_xxxxxxxxxxxx... key टाका'}
+                    value={settingsForm.braveApiKey}
+                    onChange={e => setSettingsForm(f => ({ ...f, braveApiKey: e.target.value }))}
+                    className={`w-full rounded-lg px-3 py-2 text-xs border focus:outline-none focus:border-orange-400 ${isDark ? 'bg-slate-950 border-orange-500/20 text-slate-200 placeholder-slate-600' : 'bg-white border-orange-200 text-slate-800'}`}
+                  />
+                </div>
+
+                {/* GitHub Token */}
+                <div className={`rounded-xl border p-4 space-y-3 ${isDark ? 'bg-slate-900/60 border-blue-500/20' : 'bg-blue-50 border-blue-200'}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🐙</span>
+                    <div>
+                      <p className={`text-xs font-bold tracking-wider ${isDark ? 'text-blue-400' : 'text-blue-700'}`}>GITHUB PERSONAL ACCESS TOKEN</p>
+                      <p className="text-[10px] opacity-50">Jarvis स्वतः code push/PR करण्यासाठी — github.com/settings/tokens</p>
+                    </div>
+                    {settingsData.githubTokenSet && <span className="ml-auto text-[10px] bg-emerald-900/40 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">✅ Set</span>}
+                  </div>
+                  {settingsData.githubTokenSet && <p className={`text-[10px] font-mono ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Current: {settingsData.githubToken}</p>}
+                  <input
+                    type="password"
+                    placeholder={settingsData.githubTokenSet ? 'नवीन token टाका (बदलायचा असेल तर)' : 'ghp_xxxxxxxxxxxx... token टाका'}
+                    value={settingsForm.githubToken}
+                    onChange={e => setSettingsForm(f => ({ ...f, githubToken: e.target.value }))}
+                    className={`w-full rounded-lg px-3 py-2 text-xs border focus:outline-none focus:border-blue-400 ${isDark ? 'bg-slate-950 border-blue-500/20 text-slate-200 placeholder-slate-600' : 'bg-white border-blue-200 text-slate-800'}`}
+                  />
+                </div>
+
+                {/* Whisper Language */}
+                <div className={`rounded-xl border p-4 space-y-3 ${isDark ? 'bg-slate-900/60 border-violet-500/20' : 'bg-violet-50 border-violet-200'}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🎤</span>
+                    <div>
+                      <p className={`text-xs font-bold tracking-wider ${isDark ? 'text-violet-400' : 'text-violet-700'}`}>WHISPER STT LANGUAGE</p>
+                      <p className="text-[10px] opacity-50">Offline voice recognition language</p>
+                    </div>
+                  </div>
+                  <select
+                    value={settingsForm.whisperLang}
+                    onChange={e => setSettingsForm(f => ({ ...f, whisperLang: e.target.value }))}
+                    className={`w-full rounded-lg px-3 py-2 text-xs border focus:outline-none ${isDark ? 'bg-slate-950 border-violet-500/20 text-slate-200' : 'bg-white border-violet-200 text-slate-800'}`}
+                  >
+                    <option value="hi">हिंदी / मराठी (hi)</option>
+                    <option value="en">English (en)</option>
+                    <option value="mr">Marathi (mr)</option>
+                    <option value="auto">Auto Detect</option>
+                  </select>
+                </div>
+
+                {/* RAG Toggle */}
+                <div className={`rounded-xl border p-4 space-y-3 ${isDark ? 'bg-slate-900/60 border-amber-500/20' : 'bg-amber-50 border-amber-200'}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🧠</span>
+                    <div>
+                      <p className={`text-xs font-bold tracking-wider ${isDark ? 'text-amber-400' : 'text-amber-700'}`}>RAG LONG-TERM MEMORY</p>
+                      <p className="text-[10px] opacity-50">Document memory आणि vector search</p>
+                    </div>
+                    <label className="ml-auto flex items-center gap-2 cursor-pointer">
+                      <div
+                        onClick={() => setSettingsForm(f => ({ ...f, ragEnabled: !f.ragEnabled }))}
+                        className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${settingsForm.ragEnabled ? 'bg-amber-500' : (isDark ? 'bg-slate-700' : 'bg-slate-300')}`}
+                      >
+                        <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${settingsForm.ragEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                      </div>
+                      <span className="text-[10px]">{settingsForm.ragEnabled ? 'ON' : 'OFF'}</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Save Button */}
+              <div className="px-4 pb-4 flex items-center gap-3">
+                <button
+                  onClick={saveSettingsHandler}
+                  disabled={settingsSaving}
+                  className="bg-gradient-to-r from-violet-600 to-purple-700 hover:from-violet-500 hover:to-purple-600 disabled:opacity-40 text-white font-bold px-6 py-2.5 rounded-xl text-xs tracking-widest transition-all flex items-center gap-2"
+                >
+                  {settingsSaving ? <><span className="animate-spin">⚙️</span> Saving...</> : <><Check size={13} /> SAVE SETTINGS</>}
+                </button>
+                {settingsMsg && <p className={`text-xs ${settingsMsg.startsWith('✅') ? 'text-emerald-400' : 'text-red-400'}`}>{settingsMsg}</p>}
+                <p className="text-[10px] opacity-40 ml-auto">Keys encrypted नाहीत — VPS वर फक्त तुमचाच access असावा</p>
+              </div>
+            </div>
+          )}
 
           {/* FEATURE 4: Workspace Visualizer Panel */}
           {showWorkspace && (
