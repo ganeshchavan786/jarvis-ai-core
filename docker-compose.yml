@@ -13,7 +13,7 @@ services:
     # मॉडेल नसेल तर डाउनलोड करणारी आणि सर्व्हर सुरू करणारी प्रगत कमांड
     command: >
       sh -c "
-      apt-get update && apt-get install -y wget curl build-essential git ffmpeg &&
+      apt-get update && apt-get install -y wget curl build-essential cmake git ffmpeg &&
       if ! command -v piper > /dev/null 2>&1; then
         echo '⬇️ Piper TTS container मध्ये इंस्टॉल करत आहे...';
         apt-get install -y libespeak-ng1 &&
