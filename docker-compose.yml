@@ -34,7 +34,7 @@ services:
         cd /tmp &&
         git clone --depth=1 https://github.com/ggerganov/whisper.cpp whisper-src &&
         cd whisper-src &&
-        cmake -B build -DCMAKE_BUILD_TYPE=Release &&
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF &&
         cmake --build build --config Release -j2 &&
         if [ -f build/bin/whisper-cli ]; then
           cp build/bin/whisper-cli /usr/local/bin/whisper-cpp;
