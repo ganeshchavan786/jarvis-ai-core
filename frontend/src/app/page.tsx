@@ -5,7 +5,8 @@ import {
   Mic, MicOff, Send, Play, Pause, AlertCircle, Bot, User,
   RotateCcw, Download, Cpu, Activity, CheckCircle, RefreshCw,
   Plus, Trash2, Menu, X, MessageSquare, Search, Calendar,
-  ChevronDown, ChevronRight, Sun, Moon, Copy, Check, Wrench, Zap
+  ChevronDown, ChevronRight, Sun, Moon, Copy, Check, Wrench, Zap,
+  FolderOpen, FileText, Terminal, Brain, GitBranch, Upload, Eye
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -54,10 +55,25 @@ interface SearchResult {
   created_at: number;
 }
 
-interface SystemInfo {
-  status: string;
-  llmExists: boolean;
-  ttsExists: boolean;
+// NEW: Workspace types
+interface WorkspaceNode {
+  name: string;
+  path: string;
+  type: 'file' | 'dir';
+  size?: number;
+  modified?: string;
+  children?: WorkspaceNode[];
+}
+
+// NEW: Sub-agent task type
+interface AgentTask {
+  id: string;
+  task: string;
+  agent_type: string;
+  status: 'running' | 'done' | 'error';
+  result: string | null;
+  created_at: number;
+}
   error?: string;
   cpu?: number;
   ramUsed?: number;
@@ -197,6 +213,29 @@ function StatusBar({ info }: { info: SystemInfo | null }) {
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
+// ── WorkspaceNodeView Component ───────────────────────────────────────────────
+function WorkspaceNodeView({ node, depth, onOpen, isDark }: { node: WorkspaceNode; depth: number; onOpen: (p: string) => void; isDark: boolean }) {
+  const [open, setOpen] = useState(depth === 0);
+  const pad = depth * 12;
+  if (node.type === 'dir') return (
+    <div>
+      <div onClick={() => setOpen(s => !s)} className="flex items-center gap-1 cursor-pointer hover:text-emerald-400 text-slate-400 py-0.5" style={{ paddingLeft: pad }}>
+        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        <FolderOpen size={11} className="text-amber-400 shrink-0" />
+        <span className="text-[11px]">{node.name}/</span>
+      </div>
+      {open && node.children?.map(child => <WorkspaceNodeView key={child.path} node={child} depth={depth + 1} onOpen={onOpen} isDark={isDark} />)}
+    </div>
+  );
+  return (
+    <div onClick={() => onOpen(node.path)} className="flex items-center gap-1 cursor-pointer hover:text-emerald-400 text-slate-500 py-0.5 group" style={{ paddingLeft: pad + 14 }}>
+      <FileText size={10} className="text-slate-600 group-hover:text-emerald-400 shrink-0" />
+      <span className="text-[11px] flex-1">{node.name}</span>
+      <span className="text-[9px] text-slate-700">{node.size ? `${(node.size / 1024).toFixed(1)}KB` : ''}</span>
+    </div>
+  );
+}
+
 export default function JarvisAdvancedUI() {
   // Theme
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -213,8 +252,35 @@ export default function JarvisAdvancedUI() {
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [speechLanguage, setSpeechLanguage] = useState<'mr-IN' | 'en-US'>('mr-IN');
 
+  // FEATURE 2: Whisper STT
+  const [whisperReady, setWhisperReady] = useState(false);
+  const [isRecordingWhisper, setIsRecordingWhisper] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // FEATURE 4: Workspace Visualizer
+  const [showWorkspace, setShowWorkspace] = useState(false);
+  const [workspaceTree, setWorkspaceTree] = useState<WorkspaceNode[]>([]);
+  const [selectedFile, setSelectedFile] = useState<{ path: string; content: string; lines: number } | null>(null);
+  const [execLog, setExecLog] = useState('');
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<'files' | 'preview' | 'log'>('files');
+  const workspacePollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // FEATURE 5: Multi-Agent
+  const [agentTasks, setAgentTasks] = useState<AgentTask[]>([]);
+  const [showAgentPanel, setShowAgentPanel] = useState(false);
+  const [agentTask, setAgentTask] = useState('');
+  const [agentType, setAgentType] = useState<'coder' | 'reviewer' | 'researcher' | 'tester'>('coder');
+  const agentPollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // FEATURE 3: RAG Memory
+  const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const [memoryFile, setMemoryFile] = useState<File | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState('');
+  const [memorySources, setMemorySources] = useState<any[]>([]);
+
   // System info for status bar
-  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [systemInfo, setSystemInfo] = useState<any>(null);
 
   // Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -403,14 +469,12 @@ export default function JarvisAdvancedUI() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  // System info refresh every 10s when ready
   useEffect(() => {
     if (systemState !== 'ready') return;
     const t = setInterval(checkSystemStatus, 10000);
     return () => clearInterval(t);
   }, [systemState, checkSystemStatus]);
 
-  // Search debounce
   useEffect(() => {
     if (!showSearch) return;
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -425,6 +489,133 @@ export default function JarvisAdvancedUI() {
       finally { setIsSearching(false); }
     }, 400);
   }, [searchQuery, showSearch]);
+
+  // FEATURE 2: Check Whisper status on load
+  useEffect(() => {
+    if (systemState !== 'ready') return;
+    fetch(`${API}/api/stt/status`).then(r => r.json()).then(d => setWhisperReady(d.whisper_ready)).catch(() => {});
+  }, [systemState]);
+
+  // FEATURE 4: Workspace live poll when panel open
+  useEffect(() => {
+    if (!showWorkspace) { if (workspacePollRef.current) clearInterval(workspacePollRef.current); return; }
+    const refreshWorkspace = async () => {
+      try {
+        const [treeRes, logRes] = await Promise.all([
+          fetch(`${API}/api/workspace/tree`).then(r => r.json()),
+          fetch(`${API}/api/workspace/log`).then(r => r.json())
+        ]);
+        setWorkspaceTree(treeRes.tree || []);
+        setExecLog(logRes.log || '');
+      } catch {}
+    };
+    refreshWorkspace();
+    workspacePollRef.current = setInterval(refreshWorkspace, 3000);
+    return () => { if (workspacePollRef.current) clearInterval(workspacePollRef.current); };
+  }, [showWorkspace]);
+
+  // FEATURE 5: Poll running agent tasks
+  useEffect(() => {
+    if (!showAgentPanel) return;
+    const pollAgents = async () => {
+      try {
+        const res = await fetch(`${API}/api/agent/tasks`);
+        const data = await res.json();
+        setAgentTasks(data.tasks || []);
+      } catch {}
+    };
+    pollAgents();
+    agentPollRef.current = setInterval(pollAgents, 2000);
+    return () => { if (agentPollRef.current) clearInterval(agentPollRef.current); };
+  }, [showAgentPanel]);
+
+  // FEATURE 3: Load memory sources
+  useEffect(() => {
+    if (!showMemoryPanel) return;
+    fetch(`${API}/api/memory/sources`).then(r => r.json()).then(d => setMemorySources(d.sources || [])).catch(() => {});
+  }, [showMemoryPanel]);
+
+  // FEATURE 2: Whisper recording handler
+  const handleWhisperRecord = async () => {
+    if (isRecordingWhisper) {
+      mediaRecorderRef.current?.stop();
+      setIsRecordingWhisper(false);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = e => audioChunksRef.current.push(e.data);
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const base64 = reader.result as string;
+            const res = await fetch(`${API}/api/stt`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ audio_base64: base64, language: speechLanguage === 'mr-IN' ? 'mr' : 'en' })
+            });
+            const data = await res.json();
+            if (data.text) setInput(data.text);
+            else if (data.fallback) {
+              // fallback to browser STT
+              setError({ type: 'server', message: 'Whisper model नाही — browser STT वापरत आहे.' });
+            }
+          } catch { setError({ type: 'network', message: 'Whisper STT error.' }); }
+        };
+        reader.readAsDataURL(blob);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecordingWhisper(true);
+    } catch { setError({ type: 'server', message: 'Microphone access नाकारला.' }); }
+  };
+
+  // FEATURE 3: RAG document ingest
+  const handleMemoryIngest = async () => {
+    if (!memoryFile) return;
+    setMemoryStatus('वाचत आहे...');
+    try {
+      const text = await memoryFile.text();
+      const res = await fetch(`${API}/api/memory/ingest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: memoryFile.name, content: text })
+      });
+      const data = await res.json();
+      setMemoryStatus(`✅ ${data.chunks_stored} chunks saved from "${memoryFile.name}"`);
+      setMemoryFile(null);
+      const sources = await fetch(`${API}/api/memory/sources`).then(r => r.json());
+      setMemorySources(sources.sources || []);
+    } catch { setMemoryStatus('❌ Error ingesting document.'); }
+  };
+
+  // FEATURE 5: Spawn sub-agent
+  const handleSpawnAgent = async () => {
+    if (!agentTask.trim()) return;
+    try {
+      await fetch(`${API}/api/agent/spawn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: agentTask, agent_type: agentType })
+      });
+      setAgentTask('');
+    } catch { setError({ type: 'network', message: 'Sub-agent spawn failed.' }); }
+  };
+
+  // FEATURE 4: Open workspace file
+  const handleOpenFile = async (filePath: string) => {
+    try {
+      const res = await fetch(`${API}/api/workspace/file?path=${encodeURIComponent(filePath)}`);
+      const data = await res.json();
+      setSelectedFile({ path: data.path, content: data.content, lines: data.lines });
+      setActiveWorkspaceTab('preview');
+    } catch {}
+  };
 
   // Voice recognition setup
   useEffect(() => {
@@ -827,25 +1018,155 @@ export default function JarvisAdvancedUI() {
           <header className={`flex items-center justify-between px-4 md:px-6 py-3.5 border-b backdrop-blur ${isDark ? 'bg-slate-900/60 border-violet-500/10' : 'bg-white/80 border-violet-200'}`}>
             <div className="flex items-center gap-3">
               <button onClick={() => setIsSidebarOpen(true)} className={`md:hidden p-2 rounded-lg border ${isDark ? 'text-violet-400 hover:bg-slate-800 border-violet-500/20' : 'text-violet-600 hover:bg-violet-100 border-violet-200'}`}><Menu size={18} /></button>
-              {/* Animated Jarvis Avatar */}
               <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center avatar-glow shrink-0">
                 <Bot size={18} className="text-white" />
               </div>
               <div>
                 <h1 className="text-base md:text-lg font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-purple-500">JARVIS</h1>
-                <p className="text-[9px] opacity-50 tracking-widest">CORE PROTOCOL v2.5</p>
+                <p className="text-[9px] opacity-50 tracking-widest">CORE PROTOCOL v3.0</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {/* Dark/Light toggle */}
+            <div className="flex items-center gap-1.5">
+              {/* FEATURE 4: Workspace button */}
+              <button onClick={() => { setShowWorkspace(s => !s); setShowAgentPanel(false); setShowMemoryPanel(false); }}
+                className={`p-2 rounded-lg border text-xs font-bold transition-all ${showWorkspace ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-400' : (isDark ? 'bg-slate-800 border-violet-500/20 text-slate-400 hover:text-emerald-400' : 'bg-violet-100 border-violet-300 text-violet-500')}`}
+                title="Workspace Visualizer">
+                <FolderOpen size={15} />
+              </button>
+              {/* FEATURE 5: Multi-Agent button */}
+              <button onClick={() => { setShowAgentPanel(s => !s); setShowWorkspace(false); setShowMemoryPanel(false); }}
+                className={`p-2 rounded-lg border text-xs font-bold transition-all ${showAgentPanel ? 'bg-blue-950/50 border-blue-500/40 text-blue-400' : (isDark ? 'bg-slate-800 border-violet-500/20 text-slate-400 hover:text-blue-400' : 'bg-violet-100 border-violet-300 text-violet-500')}`}
+                title="Multi-Agent Panel">
+                <GitBranch size={15} />
+              </button>
+              {/* FEATURE 3: Memory button */}
+              <button onClick={() => { setShowMemoryPanel(s => !s); setShowWorkspace(false); setShowAgentPanel(false); }}
+                className={`p-2 rounded-lg border text-xs font-bold transition-all ${showMemoryPanel ? 'bg-amber-950/50 border-amber-500/40 text-amber-400' : (isDark ? 'bg-slate-800 border-violet-500/20 text-slate-400 hover:text-amber-400' : 'bg-violet-100 border-violet-300 text-violet-500')}`}
+                title="RAG Memory">
+                <Brain size={15} />
+              </button>
               <button onClick={toggleTheme} className={`p-2 rounded-lg border transition-all ${isDark ? 'bg-slate-800 border-violet-500/20 text-violet-400 hover:text-yellow-300' : 'bg-violet-100 border-violet-300 text-violet-600 hover:text-yellow-600'}`} title="Theme बदला">
-                {isDark ? <Sun size={16} /> : <Moon size={16} />}
+                {isDark ? <Sun size={15} /> : <Moon size={15} />}
               </button>
               <button onClick={clearChat} className={`p-2 rounded-lg border transition-all ${isDark ? 'hover:bg-slate-800/80 border-violet-500/20 text-violet-500 hover:text-violet-400' : 'hover:bg-violet-100 border-violet-300 text-violet-500'}`} title="क्लियर चॅट">
-                <RotateCcw size={16} />
+                <RotateCcw size={15} />
               </button>
             </div>
           </header>
+
+          {/* FEATURE 4: Workspace Visualizer Panel */}
+          {showWorkspace && (
+            <div className={`border-b flex flex-col ${isDark ? 'bg-slate-950/80 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'}`} style={{ height: '280px' }}>
+              <div className={`flex items-center gap-2 px-4 py-2 border-b text-xs font-bold ${isDark ? 'border-emerald-500/20 text-emerald-400' : 'border-emerald-200 text-emerald-700'}`}>
+                <FolderOpen size={13} />
+                <span>WORKSPACE VISUALIZER</span>
+                <div className="flex gap-1 ml-auto">
+                  {(['files', 'preview', 'log'] as const).map(tab => (
+                    <button key={tab} onClick={() => setActiveWorkspaceTab(tab)}
+                      className={`px-2 py-0.5 rounded text-[10px] uppercase tracking-wider transition-all ${activeWorkspaceTab === tab ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-emerald-400'}`}>
+                      {tab === 'files' ? '📁 Files' : tab === 'preview' ? '👁 Preview' : '⚡ Log'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 font-mono text-xs">
+                {activeWorkspaceTab === 'files' && (
+                  <div className="space-y-0.5">
+                    {workspaceTree.length === 0 ? (
+                      <p className="text-slate-500">Workspace रिकामा आहे. Jarvis ला coding task द्या.</p>
+                    ) : workspaceTree.map(node => (
+                      <WorkspaceNodeView key={node.path} node={node} depth={0} onOpen={handleOpenFile} isDark={isDark} />
+                    ))}
+                  </div>
+                )}
+                {activeWorkspaceTab === 'preview' && selectedFile ? (
+                  <div>
+                    <div className={`flex items-center gap-2 mb-2 pb-1 border-b ${isDark ? 'border-emerald-500/20 text-emerald-400' : 'border-emerald-200 text-emerald-700'}`}>
+                      <FileText size={11} /><span>{selectedFile.path}</span>
+                      <span className="ml-auto text-slate-500">{selectedFile.lines} lines</span>
+                    </div>
+                    <pre className={`whitespace-pre-wrap text-[10px] leading-relaxed ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{selectedFile.content}</pre>
+                  </div>
+                ) : activeWorkspaceTab === 'preview' && <p className="text-slate-500">Files tab मधून file निवडा.</p>}
+                {activeWorkspaceTab === 'log' && (
+                  <pre className={`whitespace-pre-wrap text-[10px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+                    {execLog || 'अजून कोणतेही commands run झाले नाहीत.'}
+                  </pre>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* FEATURE 5: Multi-Agent Panel */}
+          {showAgentPanel && (
+            <div className={`border-b ${isDark ? 'bg-slate-950/80 border-blue-500/20' : 'bg-blue-50 border-blue-200'}`} style={{ maxHeight: '260px', overflow: 'auto' }}>
+              <div className={`flex items-center gap-2 px-4 py-2 border-b text-xs font-bold ${isDark ? 'border-blue-500/20 text-blue-400' : 'border-blue-200 text-blue-700'}`}>
+                <GitBranch size={13} /><span>MULTI-AGENT SYSTEM</span>
+              </div>
+              <div className="p-3 space-y-3">
+                <div className="flex gap-2">
+                  <select value={agentType} onChange={e => setAgentType(e.target.value as any)}
+                    className={`text-xs rounded-lg border px-2 py-1.5 ${isDark ? 'bg-slate-900 border-blue-500/30 text-blue-300' : 'bg-white border-blue-300 text-blue-700'}`}>
+                    <option value="coder">🧑‍💻 Coder</option>
+                    <option value="reviewer">🔍 Reviewer</option>
+                    <option value="researcher">📚 Researcher</option>
+                    <option value="tester">🧪 Tester</option>
+                  </select>
+                  <input value={agentTask} onChange={e => setAgentTask(e.target.value)} placeholder="Sub-agent ला task द्या..."
+                    className={`flex-1 text-xs rounded-lg border px-3 py-1.5 ${isDark ? 'bg-slate-900 border-blue-500/30 text-slate-200 placeholder-slate-600' : 'bg-white border-blue-300 text-slate-700'}`} />
+                  <button onClick={handleSpawnAgent}
+                    className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold">Spawn</button>
+                </div>
+                <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                  {agentTasks.length === 0 && <p className="text-xs text-slate-500">अजून कोणताही sub-agent नाही.</p>}
+                  {agentTasks.map(t => (
+                    <div key={t.id} className={`p-2 rounded-lg border text-xs ${isDark ? 'bg-slate-900/60 border-slate-700' : 'bg-white border-slate-200'}`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${t.status === 'done' ? 'bg-emerald-950/60 text-emerald-400' : t.status === 'error' ? 'bg-red-950/60 text-red-400' : 'bg-blue-950/60 text-blue-400'}`}>{t.status}</span>
+                        <span className="text-slate-500 text-[9px]">[{t.agent_type}]</span>
+                        <span className={`flex-1 truncate ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{t.task.substring(0, 50)}</span>
+                      </div>
+                      {t.result && <p className={`text-[10px] line-clamp-2 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{t.result}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* FEATURE 3: RAG Memory Panel */}
+          {showMemoryPanel && (
+            <div className={`border-b ${isDark ? 'bg-slate-950/80 border-amber-500/20' : 'bg-amber-50 border-amber-200'}`} style={{ maxHeight: '240px', overflow: 'auto' }}>
+              <div className={`flex items-center gap-2 px-4 py-2 border-b text-xs font-bold ${isDark ? 'border-amber-500/20 text-amber-400' : 'border-amber-200 text-amber-700'}`}>
+                <Brain size={13} /><span>RAG LONG-TERM MEMORY</span>
+              </div>
+              <div className="p-3 space-y-3">
+                <div className="flex gap-2 items-center">
+                  <label className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer text-xs ${isDark ? 'bg-slate-900 border-amber-500/30 text-amber-300 hover:border-amber-400' : 'bg-white border-amber-300 text-amber-700'}`}>
+                    <Upload size={12} />
+                    {memoryFile ? memoryFile.name.substring(0, 25) : 'Document upload करा (.txt, .md)'}
+                    <input type="file" accept=".txt,.md,.csv" className="hidden" onChange={e => setMemoryFile(e.target.files?.[0] || null)} />
+                  </label>
+                  <button onClick={handleMemoryIngest} disabled={!memoryFile}
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold disabled:opacity-30">Ingest</button>
+                </div>
+                {memoryStatus && <p className="text-xs text-amber-400">{memoryStatus}</p>}
+                <div className="space-y-1 max-h-24 overflow-y-auto">
+                  <p className={`text-[10px] font-bold mb-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>STORED DOCUMENTS ({memorySources.length})</p>
+                  {memorySources.map((s: any) => (
+                    <div key={s.source} className={`flex items-center justify-between text-[10px] px-2 py-1 rounded ${isDark ? 'bg-slate-900/60 text-slate-400' : 'bg-white text-slate-600'}`}>
+                      <span className="truncate flex-1">{s.source}</span>
+                      <span className="text-amber-500 shrink-0 ml-2">{s.chunks} chunks</span>
+                      <button onClick={async () => {
+                        await fetch(`${API}/api/memory/sources/${encodeURIComponent(s.source)}`, { method: 'DELETE' });
+                        setMemorySources(prev => prev.filter(x => x.source !== s.source));
+                      }} className="ml-2 text-red-400 hover:text-red-300"><X size={10} /></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Messages */}
           <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
@@ -933,18 +1254,26 @@ export default function JarvisAdvancedUI() {
 
           {/* Input */}
           <footer className={`p-4 md:p-5 border-t backdrop-blur ${isDark ? 'glass-panel border-violet-500/20' : 'bg-white/90 border-violet-200'}`}>
-            <div className="max-w-4xl mx-auto flex gap-3">
-              <button onClick={toggleListening} className={`p-3.5 rounded-xl border transition-all shrink-0 ${isListening ? 'bg-red-600/90 border-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.5)]' : (isDark ? 'bg-slate-900 border-violet-500/40 text-violet-400 hover:border-violet-500/70' : 'bg-violet-50 border-violet-300 text-violet-600 hover:border-violet-500')}`} title={isListening ? 'ऐकणे थांबवा' : 'बोला'}>
-                {isListening ? <MicOff size={22} className="animate-pulse" /> : <Mic size={22} />}
+            <div className="max-w-4xl mx-auto flex gap-2">
+              {/* Browser STT */}
+              <button onClick={toggleListening} className={`p-3 rounded-xl border transition-all shrink-0 ${isListening ? 'bg-red-600/90 border-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.5)]' : (isDark ? 'bg-slate-900 border-violet-500/40 text-violet-400 hover:border-violet-500/70' : 'bg-violet-50 border-violet-300 text-violet-600 hover:border-violet-500')}`} title={isListening ? 'ऐकणे थांबवा' : 'Browser STT'}>
+                {isListening ? <MicOff size={18} className="animate-pulse" /> : <Mic size={18} />}
               </button>
-              <button onClick={() => setSpeechLanguage(p => p === 'mr-IN' ? 'en-US' : 'mr-IN')} className={`px-3 rounded-xl border transition-all shrink-0 font-bold text-xs ${isDark ? (speechLanguage === 'mr-IN' ? 'bg-violet-950/40 border-violet-500/30 text-violet-400' : 'bg-blue-950/40 border-blue-500/30 text-blue-400') : (speechLanguage === 'mr-IN' ? 'bg-violet-100 border-violet-300 text-violet-700' : 'bg-blue-50 border-blue-300 text-blue-600')}`}>
-                {speechLanguage === 'mr-IN' ? 'मराठी' : 'ENG'}
+              {/* FEATURE 2: Whisper offline STT */}
+              <button onClick={handleWhisperRecord}
+                className={`p-3 rounded-xl border transition-all shrink-0 relative ${isRecordingWhisper ? 'bg-orange-600/90 border-orange-500 text-white animate-pulse' : (isDark ? 'bg-slate-900 border-emerald-500/30 text-emerald-400 hover:border-emerald-500/60' : 'bg-emerald-50 border-emerald-300 text-emerald-600')}`}
+                title={whisperReady ? (isRecordingWhisper ? 'Recording थांबवा (Whisper)' : 'Whisper Offline STT') : 'Whisper model नाही'}>
+                <Activity size={18} />
+                {whisperReady && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />}
+              </button>
+              <button onClick={() => setSpeechLanguage(p => p === 'mr-IN' ? 'en-US' : 'mr-IN')} className={`px-2.5 rounded-xl border transition-all shrink-0 font-bold text-xs ${isDark ? (speechLanguage === 'mr-IN' ? 'bg-violet-950/40 border-violet-500/30 text-violet-400' : 'bg-blue-950/40 border-blue-500/30 text-blue-400') : (speechLanguage === 'mr-IN' ? 'bg-violet-100 border-violet-300 text-violet-700' : 'bg-blue-50 border-blue-300 text-blue-600')}`}>
+                {speechLanguage === 'mr-IN' ? 'मर' : 'EN'}
               </button>
               <input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
-                placeholder={isListening ? 'ऐकत आहे...' : 'तुमचा आदेश टाईप करा...'}
-                disabled={isListening}
+                placeholder={isListening ? 'ऐकत आहे...' : isRecordingWhisper ? '🔴 Whisper recording...' : 'तुमचा आदेश टाईप करा...'}
+                disabled={isListening || isRecordingWhisper}
                 className={`flex-1 border rounded-xl px-4 text-sm md:text-base focus:outline-none transition-all ${isDark ? 'bg-slate-950/80 border-violet-500/30 text-slate-100 placeholder-slate-500 focus:border-violet-400' : 'bg-white border-violet-300 text-slate-800 placeholder-slate-400 focus:border-violet-500'}`} />
-              <button onClick={handleSendMessage} disabled={loading || !input.trim()} className="p-3.5 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl disabled:opacity-30 disabled:pointer-events-none transition-all shadow-[0_0_15px_rgba(139,92,246,0.4)]">
+              <button onClick={handleSendMessage} disabled={loading || !input.trim()} className="p-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl disabled:opacity-30 disabled:pointer-events-none transition-all shadow-[0_0_15px_rgba(139,92,246,0.4)]">
                 <Send size={18} />
               </button>
             </div>
