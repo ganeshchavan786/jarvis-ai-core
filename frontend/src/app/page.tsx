@@ -620,18 +620,46 @@ export default function JarvisAdvancedUI() {
     if (!memoryFile) return;
     setMemoryStatus('वाचत आहे...');
     try {
-      const text = await memoryFile.text();
-      const res = await fetch(`${API}/api/memory/ingest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: memoryFile.name, content: text })
-      });
-      const data = await res.json();
-      setMemoryStatus(`✅ ${data.chunks_stored} chunks saved from "${memoryFile.name}"`);
-      setMemoryFile(null);
-      const sources = await fetch(`${API}/api/memory/sources`).then(r => r.json());
-      setMemorySources(sources.sources || []);
-    } catch { setMemoryStatus('❌ Error ingesting document.'); }
+      const isPdf = memoryFile.name.toLowerCase().endsWith('.pdf');
+      
+      const sendIngestRequest = async (payload: any) => {
+        const res = await fetch(`${API}/api/memory/ingest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.ok) {
+          setMemoryStatus(`✅ ${data.chunks_stored} chunks saved from "${memoryFile.name}"`);
+          setMemoryFile(null);
+          const sources = await fetch(`${API}/api/memory/sources`).then(r => r.json());
+          setMemorySources(sources.sources || []);
+        } else {
+          setMemoryStatus(`❌ Error: ${data.error || 'Ingest failed'}`);
+        }
+      };
+
+      if (isPdf) {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const base64 = reader.result as string;
+            await sendIngestRequest({
+              source: memoryFile.name,
+              file_base64: base64,
+              file_type: 'pdf'
+            });
+          } catch { setMemoryStatus('❌ PDF file वाचताना एरर आला.'); }
+        };
+        reader.readAsDataURL(memoryFile);
+      } else {
+        const text = await memoryFile.text();
+        await sendIngestRequest({
+          source: memoryFile.name,
+          content: text
+        });
+      }
+    } catch { setMemoryStatus('❌ Document ingest करताना एरर आला.'); }
   };
 
   // FEATURE 5: Spawn sub-agent
@@ -1297,8 +1325,8 @@ export default function JarvisAdvancedUI() {
                 <div className="flex gap-2 items-center">
                   <label className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer text-xs ${isDark ? 'bg-slate-900 border-amber-500/30 text-amber-300 hover:border-amber-400' : 'bg-white border-amber-300 text-amber-700'}`}>
                     <Upload size={12} />
-                    {memoryFile ? memoryFile.name.substring(0, 25) : 'Document upload करा (.txt, .md)'}
-                    <input type="file" accept=".txt,.md,.csv" className="hidden" onChange={e => setMemoryFile(e.target.files?.[0] || null)} />
+                    {memoryFile ? memoryFile.name.substring(0, 25) : 'Document upload करा (.txt, .md, .pdf)'}
+                    <input type="file" accept=".txt,.md,.csv,.pdf" className="hidden" onChange={e => setMemoryFile(e.target.files?.[0] || null)} />
                   </label>
                   <button onClick={handleMemoryIngest} disabled={!memoryFile}
                     className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold disabled:opacity-30">Ingest</button>

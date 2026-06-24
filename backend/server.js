@@ -4,6 +4,8 @@ import fs from 'fs';
 import https from 'https';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
+import pdf from 'pdf-parse';
 import { spawn, exec } from 'child_process';
 import util from 'util';
 import Database from 'better-sqlite3';
@@ -256,8 +258,26 @@ function simpleEmbed(text, vocabSize = 256) {
 // POST /api/memory/ingest — add document chunks to memory
 app.post('/api/memory/ingest', async (req, res) => {
     try {
-        const { source, content } = req.body;
-        if (!source || !content) return res.status(400).json({ error: 'source and content required' });
+        const { source, file_base64, file_type } = req.body;
+        let content = req.body.content;
+
+        if (!source) return res.status(400).json({ error: 'source required' });
+
+        if (file_base64 && file_type === 'pdf') {
+            try {
+                const pdfBuffer = Buffer.from(file_base64.replace(/^data:application\/pdf;base64,/, ''), 'base64');
+                const pdfData = await pdf(pdfBuffer);
+                content = pdfData.text;
+                console.log(`📄 PDF parsed successfully [${source}]: ~${content.length} chars extracted.`);
+            } catch (pdfErr) {
+                console.error("❌ PDF parse error:", pdfErr.message);
+                return res.status(400).json({ error: 'Failed to parse PDF file: ' + pdfErr.message });
+            }
+        }
+
+        if (!content || !content.trim()) {
+            return res.status(400).json({ error: 'Content is empty or failed to extract text.' });
+        }
 
         // Split into ~300 word chunks
         const words = content.split(/\s+/);
@@ -490,18 +510,78 @@ app.delete('/api/agent/tasks', (req, res) => {
 // ⚙️  SETTINGS API — read/write API keys & config from UI
 // ═══════════════════════════════════════════════════════════════════════════
 const SETTINGS_PATH = './settings.json';
+const KEY_PATH = './.secrets_key';
+const ALGORITHM = 'aes-256-cbc';
+let encryptionKey = null;
+
+function getEncryptionKey() {
+    if (encryptionKey) return encryptionKey;
+    try {
+        if (fs.existsSync(KEY_PATH)) {
+            const hexKey = fs.readFileSync(KEY_PATH, 'utf8').trim();
+            encryptionKey = Buffer.from(hexKey, 'hex');
+            if (encryptionKey.length === 32) {
+                return encryptionKey;
+            }
+        }
+    } catch (_) {}
+    
+    // Generate new 32-byte key
+    const key = crypto.randomBytes(32);
+    try {
+        fs.writeFileSync(KEY_PATH, key.toString('hex'), 'utf8');
+        console.log("🔑 Generated new local encryption key in .secrets_key");
+    } catch (err) {
+        console.error("❌ Failed to write encryption key:", err.message);
+    }
+    encryptionKey = key;
+    return encryptionKey;
+}
+
+function encrypt(text) {
+    const key = getEncryptionKey();
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return `${iv.toString('hex')}:${encrypted}`;
+}
+
+function decrypt(text) {
+    try {
+        const parts = text.split(':');
+        if (parts.length !== 2) return text; // Not encrypted
+        const iv = Buffer.from(parts[0], 'hex');
+        const encryptedText = Buffer.from(parts[1], 'hex');
+        const key = getEncryptionKey();
+        const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (err) {
+        console.error("❌ Decryption failed:", err.message);
+        return '{}';
+    }
+}
 
 function loadSettings() {
     try {
         if (fs.existsSync(SETTINGS_PATH)) {
-            return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+            const rawContent = fs.readFileSync(SETTINGS_PATH, 'utf8').trim();
+            let jsonString = rawContent;
+            if (rawContent && !rawContent.startsWith('{')) {
+                jsonString = decrypt(rawContent);
+            }
+            return JSON.parse(jsonString);
         }
     } catch (_) {}
     return { braveApiKey: '', githubToken: '', whisperLang: 'hi', ragEnabled: true };
 }
 
 function saveSettings(data) {
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(data, null, 2), 'utf8');
+    const jsonString = JSON.stringify(data, null, 2);
+    const encryptedContent = encrypt(jsonString);
+    fs.writeFileSync(SETTINGS_PATH, encryptedContent, 'utf8');
 }
 
 // GET /api/settings — return current settings (keys masked)

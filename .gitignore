@@ -31,4 +31,6 @@ Thumbs.db
 
 # Local secrets
 backend/secrets.json
+backend/settings.json
+backend/.secrets_key
 
