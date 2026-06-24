@@ -195,11 +195,12 @@ app.post('/api/stt', async (req, res) => {
         const audioBuffer = Buffer.from(audio_base64.replace(/^data:audio\/\w+;base64,/, ''), 'base64');
         await fs.promises.writeFile(tmpAudio, audioBuffer);
 
-        // Run whisper.cpp (must be installed: apt install whisper.cpp or compiled)
+        // Run whisper.cpp — LD_LIBRARY_PATH ensures libwhisper.so.1 is found
         const langFlag = language !== 'auto' ? `-l ${language}` : '';
         const whisperCmd = `whisper-cpp -m ${WHISPER_MODEL_PATH} -f ${tmpAudio} ${langFlag}`;
+        const whisperEnv = { ...process.env, LD_LIBRARY_PATH: '/usr/local/lib:/usr/lib:/lib' };
 
-        const { stdout } = await execPromise(whisperCmd, { timeout: 30000 });
+        const { stdout } = await execPromise(whisperCmd, { timeout: 30000, env: whisperEnv });
         await fs.promises.unlink(tmpAudio).catch(() => {});
 
         // whisper.cpp outputs text with timestamps — extract clean text

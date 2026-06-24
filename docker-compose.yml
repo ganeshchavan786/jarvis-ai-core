@@ -36,7 +36,9 @@ services:
         cd whisper-src &&
         cmake -B build -DCMAKE_BUILD_TYPE=Release &&
         cmake --build build --config Release -j2 &&
-        find /tmp/whisper-src/build -name 'libwhisper*.so*' -exec cp -a {} /usr/local/lib/ \; &&
+        echo '📚 Whisper shared libraries copy करत आहे...' &&
+        find /tmp/whisper-src/build -name 'libwhisper*.so*' -not -type l -exec cp {} /usr/local/lib/ \; &&
+        find /tmp/whisper-src/build -name 'libwhisper*.so*' -type l -exec cp -a {} /usr/local/lib/ \; &&
         ldconfig &&
         if [ -f build/bin/whisper-cli ]; then
           cp build/bin/whisper-cli /usr/local/bin/whisper-cpp;
