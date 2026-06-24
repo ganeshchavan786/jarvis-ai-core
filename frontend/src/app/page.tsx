@@ -74,6 +74,11 @@ interface AgentTask {
   result: string | null;
   created_at: number;
 }
+
+interface SystemInfo {
+  status: string;
+  llmExists: boolean;
+  ttsExists: boolean;
   error?: string;
   cpu?: number;
   ramUsed?: number;
