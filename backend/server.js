@@ -1252,7 +1252,7 @@ async function initJarvisMinds() {
         model = await llama.loadModel({ modelPath: LLM_PATH });
 
         console.log("✅ Model loaded! Creating context...");
-        context = await model.createContext({ contextSize: 4096 });
+        context = await model.createContext({ contextSize: 16384 });
 
         chatSession = new LlamaChatSession({
             contextSequence: context.getSequence(),
@@ -1420,7 +1420,7 @@ app.post('/api/reset-chat', async (req, res) => {
     try {
         if (model && context) {
             await context.dispose();
-            context = await model.createContext({ contextSize: 2048 });
+            context = await model.createContext({ contextSize: 16384 });
             chatSession = new LlamaChatSession({
                 contextSequence: context.getSequence(),
                 systemPrompt: "You are Jarvis, a highly advanced AI assistant. You can perform actions, write/read files, run code and use MCP servers via tools. Keep answers concise, intelligent, and well-formatted."
