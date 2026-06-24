@@ -13,8 +13,8 @@ services:
     # मॉडेल नसेल तर डाउनलोड करणारी आणि सर्व्हर सुरू करणारी प्रगत कमांड
     command: >
       sh -c "
-      apt-get update && apt-get install -y wget &&
-      if ! command -v piper >/dev/null 2>&1; then
+      apt-get update && apt-get install -y wget curl build-essential git ffmpeg &&
+      if ! command -v piper > /dev/null 2>&1; then
         echo '⬇️ Piper TTS container मध्ये इंस्टॉल करत आहे...';
         apt-get install -y libespeak-ng1 &&
         cd /tmp &&
@@ -29,7 +29,24 @@ services:
         ldconfig &&
         echo '✅ Piper TTS इंस्टॉल पूर्ण झाले!';
       fi &&
+      if ! command -v whisper-cpp > /dev/null 2>&1 && [ ! -f /usr/local/bin/whisper-cpp ]; then
+        echo '⬇️ Whisper.cpp install करत आहे (offline STT साठी)...';
+        cd /tmp &&
+        git clone --depth=1 https://github.com/ggerganov/whisper.cpp whisper-src &&
+        cd whisper-src &&
+        make -j2 &&
+        cp main /usr/local/bin/whisper-cpp &&
+        chmod +x /usr/local/bin/whisper-cpp &&
+        cd /tmp && rm -rf whisper-src &&
+        echo '✅ Whisper.cpp install पूर्ण झाले!';
+      fi &&
       cd /app &&
+      mkdir -p models/whisper &&
+      if [ ! -f models/whisper/ggml-base.bin ]; then
+        echo '⬇️ Whisper base model download करत आहे (~142 MB)...';
+        wget -q -O models/whisper/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin &&
+        echo '✅ Whisper model download पूर्ण झाले!';
+      fi &&
       mkdir -p models &&
       if [ ! -f models/qwen2.5-7b-instruct-q4_k_m.gguf ]; then
         echo '⬇️ Qwen-7B Model नाहीये, डाउनलोड सुरू होत आहे... याला इंटरनेट स्पीडनुसार ५-१५ मिनिटे लागू शकतात...';
