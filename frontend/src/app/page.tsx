@@ -98,7 +98,7 @@ function extractToolBadges(text: string): string[] {
   for (const t of KNOWN_TOOLS) {
     if (text.includes(t)) found.push(t);
   }
-  return [...new Set(found)];
+  return found.filter((v, i, a) => a.indexOf(v) === i);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
