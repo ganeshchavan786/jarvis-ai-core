@@ -519,7 +519,7 @@ export default function JarvisAdvancedUI() {
       const r = await fetch(`${API}/api/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json();
       if (d.ok) {
-        setSettingsMsg('✅ Settings saved! Backend restart केल्यावर keys active होतील.');
+        setSettingsMsg('✅ Settings saved! MCP Servers dynamically reload झाले आहेत.');
         setSettingsForm(f => ({ ...f, braveApiKey: '', githubToken: '' }));
         fetch(`${API}/api/settings`).then(r2 => r2.json()).then(setSettingsData).catch(() => {});
       } else { setSettingsMsg('❌ Error: ' + (d.error || 'Unknown')); }
@@ -594,7 +594,10 @@ export default function JarvisAdvancedUI() {
             const res = await fetch(`${API}/api/stt`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ audio_base64: base64, language: speechLanguage === 'mr-IN' ? 'mr' : 'en' })
+              body: JSON.stringify({ 
+                audio_base64: base64, 
+                language: speechLanguage === 'mr-IN' ? (settingsData.whisperLang && settingsData.whisperLang !== 'en' ? settingsData.whisperLang : 'mr') : 'en' 
+              })
             });
             const data = await res.json();
             if (data.text) setInput(data.text);

@@ -195,7 +195,7 @@ app.post('/api/stt', async (req, res) => {
 
         // Run whisper.cpp (must be installed: apt install whisper.cpp or compiled)
         const langFlag = language !== 'auto' ? `-l ${language}` : '';
-        const whisperCmd = `whisper-cpp -m ${WHISPER_MODEL_PATH} -f ${tmpAudio} ${langFlag} --output-txt -np`;
+        const whisperCmd = `whisper-cpp -m ${WHISPER_MODEL_PATH} -f ${tmpAudio} ${langFlag}`;
 
         const { stdout } = await execPromise(whisperCmd, { timeout: 30000 });
         await fs.promises.unlink(tmpAudio).catch(() => {});
@@ -542,11 +542,42 @@ app.post('/api/settings', async (req, res) => {
             fs.writeFileSync(mcpConfigPath, JSON.stringify(mcp, null, 2), 'utf8');
         }
 
-        res.json({ ok: true, message: 'Settings saved! MCP config updated. Restart backend to activate new keys.' });
+        // Reload MCP servers dynamically so keys take effect immediately
+        await reloadMcpServers();
+
+        res.json({ ok: true, message: 'Settings saved! MCP servers reloaded dynamically.' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Function to reload MCP servers dynamically
+async function reloadMcpServers() {
+    console.log("🔄 Reloading MCP servers dynamically...");
+    
+    // Close existing MCP clients
+    for (const [serverName, client] of Object.entries(mcpClients)) {
+        try {
+            console.log(`🔌 Closing client connection for MCP Server: ${serverName}`);
+            await client.close();
+        } catch (err) {
+            console.error(`❌ Error closing MCP client ${serverName}:`, err.message);
+        }
+    }
+    
+    // Reset state
+    mcpClients = {};
+    mcpTools = {};
+    
+    // Re-initialize MCP servers
+    await initMcpServers();
+    
+    // Re-compile all tools
+    compileAllTools();
+    
+    console.log("✅ MCP servers reloaded and tools compiled dynamically!");
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 async function initMcpServers() {
