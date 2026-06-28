@@ -717,9 +717,18 @@ export default function JarvisAdvancedUI() {
 
   // ── Chat Actions ──────────────────────────────────────────────────────────
 
+  // Prevent duplicate submits — ref-based lock (state updates are async, ref is instant)
+  const isSubmittingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const [timeoutWarning, setTimeoutWarning] = useState(false);
+
   const handleSendMessage = async () => {
-    if (!input.trim() || loading) return;
+    // ── Guard: block if already submitting (ref check = instant, no race) ──
+    if (!input.trim() || loading || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+
     setError({ type: null, message: '' });
+    setTimeoutWarning(false);
     const now = Date.now();
     const userMsg: Message = { id: now.toString(), sender: 'user', text: input.trim(), created_at: now };
     const userPrompt = input.trim();
@@ -735,11 +744,24 @@ export default function JarvisAdvancedUI() {
     }
     await saveMessageToDB(userMsg, activeSessionId);
 
+    // ── Timeout: show warning at 30s, abort at 120s ──────────────────────
+    const WARN_MS = 30000;
+    const ABORT_MS = 120000;
+
+    const abortCtrl = new AbortController();
+    abortControllerRef.current = abortCtrl;
+
+    const warnTimer = setTimeout(() => setTimeoutWarning(true), WARN_MS);
+    const abortTimer = setTimeout(() => {
+      abortCtrl.abort();
+    }, ABORT_MS);
+
     try {
       const res = await fetch(`${API}/api/jarvis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: userPrompt })
+        body: JSON.stringify({ prompt: userPrompt }),
+        signal: abortCtrl.signal
       });
       if (!res.ok) throw new Error(res.status === 503 ? 'server' : 'network');
       const data = await res.json();
@@ -756,15 +778,29 @@ export default function JarvisAdvancedUI() {
       if (data.audio) handlePlayAudio(jarvisMsg.id, data.audio);
       else speakWithBrowser(data.text);
     } catch (err: any) {
-      setError({
-        type: err.message === 'server' ? 'server' : 'network',
-        message: err.message === 'server'
-          ? '⚠️ जार्विस लोड होत आहे, कृपया थांबा.'
-          : '🌐 नेटवर्क एरर! सर्व्हर बंद असण्याची शक्यता आहे.'
-      });
+      if (err.name === 'AbortError') {
+        setError({ type: 'server', message: '⏱️ जार्विस उत्तर देत नाही (120s timeout). Reset करा किंवा पुन्हा विचारा.' });
+      } else {
+        setError({
+          type: err.message === 'server' ? 'server' : 'network',
+          message: err.message === 'server'
+            ? '⚠️ जार्विस लोड होत आहे, कृपया थांबा.'
+            : '🌐 नेटवर्क एरर! सर्व्हर बंद असण्याची शक्यता आहे.'
+        });
+      }
     } finally {
+      clearTimeout(warnTimer);
+      clearTimeout(abortTimer);
       setLoading(false);
+      setTimeoutWarning(false);
+      isSubmittingRef.current = false;
+      abortControllerRef.current = null;
     }
+  };
+
+  // Cancel ongoing request manually
+  const handleCancelRequest = () => {
+    abortControllerRef.current?.abort();
   };
 
   const createNewChat = async () => {
@@ -1410,15 +1446,26 @@ export default function JarvisAdvancedUI() {
 
             {/* Typing Animation */}
             {loading && (
-              <div className="flex gap-3 max-w-[80%] mr-auto items-center">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-500 to-purple-700 avatar-glow flex items-center justify-center">
+              <div className="flex gap-3 max-w-[80%] mr-auto items-start">
+                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-500 to-purple-700 avatar-glow flex items-center justify-center shrink-0">
                   <Bot size={15} className="text-white" />
                 </div>
-                <div className={`glass-panel p-4 rounded-2xl rounded-tl-none flex gap-2 items-center ${isDark ? '' : 'bg-white/80'}`}>
-                  <span className="dot-1 w-2.5 h-2.5 bg-violet-400 rounded-full" />
-                  <span className="dot-2 w-2.5 h-2.5 bg-violet-500 rounded-full" />
-                  <span className="dot-3 w-2.5 h-2.5 bg-violet-600 rounded-full" />
-                  <span className={`text-xs ml-1 ${isDark ? 'text-violet-500/60' : 'text-violet-400'}`}>विचार करत आहे...</span>
+                <div className={`glass-panel p-4 rounded-2xl rounded-tl-none flex flex-col gap-2 ${isDark ? '' : 'bg-white/80'}`}>
+                  <div className="flex gap-2 items-center">
+                    <span className="dot-1 w-2.5 h-2.5 bg-violet-400 rounded-full" />
+                    <span className="dot-2 w-2.5 h-2.5 bg-violet-500 rounded-full" />
+                    <span className="dot-3 w-2.5 h-2.5 bg-violet-600 rounded-full" />
+                    <span className={`text-xs ml-1 ${isDark ? 'text-violet-500/60' : 'text-violet-400'}`}>विचार करत आहे...</span>
+                    <button onClick={handleCancelRequest} title="Request रद्द करा"
+                      className={`ml-2 text-[10px] px-2 py-0.5 rounded-lg border transition-all ${isDark ? 'text-slate-500 border-slate-700 hover:text-red-400 hover:border-red-500/40' : 'text-slate-400 border-slate-300 hover:text-red-500'}`}>
+                      ✕ रद्द
+                    </button>
+                  </div>
+                  {timeoutWarning && (
+                    <div className="flex items-center gap-2 pt-1 border-t border-amber-500/20">
+                      <span className="text-[11px] text-amber-400">⏱️ 30 seconds झाले — जार्विस व्यस्त आहे. थांबा किंवा रद्द करा.</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1450,13 +1497,19 @@ export default function JarvisAdvancedUI() {
               <button onClick={() => setSpeechLanguage(p => p === 'mr-IN' ? 'en-US' : 'mr-IN')} className={`px-2.5 rounded-xl border transition-all shrink-0 font-bold text-xs ${isDark ? (speechLanguage === 'mr-IN' ? 'bg-violet-950/40 border-violet-500/30 text-violet-400' : 'bg-blue-950/40 border-blue-500/30 text-blue-400') : (speechLanguage === 'mr-IN' ? 'bg-violet-100 border-violet-300 text-violet-700' : 'bg-blue-50 border-blue-300 text-blue-600')}`}>
                 {speechLanguage === 'mr-IN' ? 'मर' : 'EN'}
               </button>
-              <input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
+              <input type="text" value={input} onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !loading && !isSubmittingRef.current) handleSendMessage(); }}
                 placeholder={isListening ? 'ऐकत आहे...' : isRecordingWhisper ? '🔴 Whisper recording...' : 'तुमचा आदेश टाईप करा...'}
-                disabled={isListening || isRecordingWhisper}
                 className={`flex-1 border rounded-xl px-4 text-sm md:text-base focus:outline-none transition-all ${isDark ? 'bg-slate-950/80 border-violet-500/30 text-slate-100 placeholder-slate-500 focus:border-violet-400' : 'bg-white border-violet-300 text-slate-800 placeholder-slate-400 focus:border-violet-500'}`} />
-              <button onClick={handleSendMessage} disabled={loading || !input.trim()} className="p-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl disabled:opacity-30 disabled:pointer-events-none transition-all shadow-[0_0_15px_rgba(139,92,246,0.4)]">
-                <Send size={18} />
-              </button>
+              {loading ? (
+                <button onClick={handleCancelRequest} className="p-3 bg-red-600/80 hover:bg-red-600 text-white font-bold rounded-xl transition-all" title="थांबवा">
+                  <X size={18} />
+                </button>
+              ) : (
+                <button onClick={handleSendMessage} disabled={!input.trim()} className="p-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl disabled:opacity-30 disabled:pointer-events-none transition-all shadow-[0_0_15px_rgba(139,92,246,0.4)]">
+                  <Send size={18} />
+                </button>
+              )}
             </div>
           </footer>
         </div>
