@@ -1424,7 +1424,7 @@ app.post('/api/jarvis', async (req, res) => {
     }
 
     // Backend timeout — 90s नंतर automatic error response
-    const BACKEND_TIMEOUT_MS = 180000;
+    const BACKEND_TIMEOUT_MS = 400000;
     let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
         timeoutHandle = setTimeout(() => reject(new Error('BACKEND_TIMEOUT')), BACKEND_TIMEOUT_MS);
