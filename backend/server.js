@@ -1249,41 +1249,20 @@ async function initJarvisMinds() {
         llama = await getLlama();
 
         console.log("🔄 Loading Qwen-7B model on CPU (this takes 1-2 min)...");
-        model = await llama.loadModel({ modelPath: LLM_PATH });
+        model = await llama.loadModel({
+            modelPath: LLM_PATH,
+            gpuLayers: 0,
+        });
 
         console.log("✅ Model loaded! Creating context...");
-        context = await model.createContext({ contextSize: 16384 });
+        context = await model.createContext({
+            contextSize: 4096,   // 16384 → 4096: 4x faster, enough for normal chat
+            batchSize: 512,      // smaller batch = faster first token
+        });
 
         chatSession = new LlamaChatSession({
             contextSequence: context.getSequence(),
-            systemPrompt: `You are Jarvis v3.0 — a highly advanced AI supervisor agent with a full coding workspace, long-term memory, and multi-agent capabilities.
-
-━━━ CODING TOOLS (use in order) ━━━
-1. list_workspace_files — recursive file tree with sizes
-2. write_code_file — create files (supports subdirs: src/utils/app.py)
-3. patch_code_file — edit specific lines (use BEFORE rewriting whole file)
-4. read_code_file — read with line numbers (do this before patching)
-5. execute_code_command — run code. Auto-detects runtime from extension.
-6. install_package — npm or pip install
-7. search_in_files — keyword search across workspace
-8. delete_file — remove files
-9. get_execution_log — command history
-
-━━━ MEMORY TOOLS ━━━
-10. memory_search — semantic search in long-term document memory
-11. memory_remember — save a fact: key=value (user prefs, important info)
-12. memory_recall — recall a saved fact by key
-
-━━━ MULTI-AGENT TOOLS ━━━
-13. spawn_sub_agent — create a specialized sub-agent (coder/reviewer/researcher/tester)
-14. check_sub_agent — poll result of a spawned sub-agent
-
-━━━ RULES ━━━
-AUTO-DEBUG: If code fails → read error → patch_code_file → retry (max 3x before asking user)
-MULTI-AGENT: For complex tasks, spawn a reviewer or tester sub-agent after coding.
-MEMORY: If user mentions a preference or important fact, use memory_remember to save it.
-
-Keep answers concise. Use markdown. Explain what tool you called and why.`
+            systemPrompt: `You are Jarvis, an AI assistant with tools for coding, memory, and system tasks. Be concise. Use markdown. Tools available: coding(write/read/patch/exec/install/search/delete files), memory(search/remember/recall), agents(spawn/check), system(time/weather/vps/notes).`
         });
 
         systemStatus = 'ready';
@@ -1447,37 +1426,52 @@ app.post('/api/jarvis', async (req, res) => {
         return res.status(400).json({ error: "Empty prompt." });
     }
 
+    // Backend timeout — 90s नंतर automatic error response
+    const BACKEND_TIMEOUT_MS = 90000;
+    let timeoutHandle;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('BACKEND_TIMEOUT')), BACKEND_TIMEOUT_MS);
+    });
+
     try {
         console.log(`💬 User: ${prompt}`);
 
-        // Fix 1: Retry without tools if LLM returns empty output
-        let responseText;
-        try {
-            responseText = await chatSession.prompt(prompt, {
-                functions: Object.keys(allRegisteredTools).length > 0 ? allRegisteredTools : undefined
-            });
-        } catch (innerErr) {
-            if (innerErr.message?.includes('model output must contain')) {
-                console.warn('⚠️ Empty model output with tools — retrying without tools...');
-                responseText = await chatSession.prompt(prompt);
-            } else {
-                throw innerErr;
+        const inferencePromise = (async () => {
+            let responseText;
+            try {
+                responseText = await chatSession.prompt(prompt, {
+                    functions: Object.keys(allRegisteredTools).length > 0 ? allRegisteredTools : undefined,
+                    maxTokens: 512,  // response खूप लांब होणार नाही — faster
+                });
+            } catch (innerErr) {
+                if (innerErr.message?.includes('model output must contain')) {
+                    console.warn('⚠️ Empty model output with tools — retrying without tools...');
+                    responseText = await chatSession.prompt(prompt, { maxTokens: 512 });
+                } else {
+                    throw innerErr;
+                }
             }
-        }
+            return responseText;
+        })();
 
-        // Fix 2: Final safety check — never return empty response
+        let responseText = await Promise.race([inferencePromise, timeoutPromise]);
+        clearTimeout(timeoutHandle);
+
         if (!responseText || !responseText.trim()) {
             responseText = "मला नक्की समजले नाही. कृपया वेगळ्या प्रकारे विचारा.";
         }
 
-        // Fix 3: null-safe logging
         console.log(`🤖 Jarvis: ${(responseText || '').substring(0, 100)}...`);
 
-        // Generate audio with Piper TTS (returns null if not available)
         const audioDataUrl = await synthesizeSpeech(responseText);
-
         res.json({ text: responseText, audio: audioDataUrl });
+
     } catch (error) {
+        clearTimeout(timeoutHandle);
+        if (error.message === 'BACKEND_TIMEOUT') {
+            console.error("⏱️ Backend timeout — model too slow");
+            return res.status(504).json({ error: "Jarvis ला उत्तर द्यायला वेळ लागतोय. पुन्हा विचारा." });
+        }
         console.error("Jarvis inference error:", error);
         res.status(500).json({ error: "Processing error: " + error.message });
     }
