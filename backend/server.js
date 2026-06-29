@@ -1424,7 +1424,7 @@ app.post('/api/jarvis', async (req, res) => {
     }
 
     // Backend timeout — 90s नंतर automatic error response
-    const BACKEND_TIMEOUT_MS = 90000;
+    const BACKEND_TIMEOUT_MS = 180000;
     let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
         timeoutHandle = setTimeout(() => reject(new Error('BACKEND_TIMEOUT')), BACKEND_TIMEOUT_MS);
@@ -1433,37 +1433,14 @@ app.post('/api/jarvis', async (req, res) => {
     try {
         console.log(`💬 User: ${prompt}`);
 
-        // फक्त 18 core tools LLM ला द्या — 58 MCP tools वगळा (ते खूप tokens वापरतात)
-        const coreToolNames = [
-            'get_current_time', 'get_system_status', 'get_live_weather', 'manage_notes',
-            'write_code_file', 'patch_code_file', 'read_code_file', 'delete_file',
-            'list_workspace_files', 'search_in_files', 'install_package',
-            'execute_code_command', 'get_execution_log',
-            'memory_search', 'memory_remember', 'memory_recall',
-            'spawn_sub_agent', 'check_sub_agent'
-        ];
-        const coreTools = Object.fromEntries(
-            Object.entries(allRegisteredTools).filter(([k]) => coreToolNames.includes(k))
-        );
-        console.log(`🛠 Using ${Object.keys(coreTools).length} core tools (MCP tools excluded for speed)`);
+        // Tools बंद — Qwen-7B CPU वर tools सह खूप slow आहे
+        // Plain chat mode: fast responses, no tool overhead
+        console.log(`💬 Plain chat mode (no tools — CPU optimized)`);
 
         const inferencePromise = (async () => {
-            let responseText;
-            try {
-                responseText = await chatSession.prompt(prompt, {
-                    functions: Object.keys(coreTools).length > 0 ? coreTools : undefined,
-                    maxTokens: 512,
-                });
-            } catch (innerErr) {
-                if (innerErr.message?.includes('model output must contain') ||
-                    innerErr.message?.includes('context size') ||
-                    innerErr.message?.includes('fits the context')) {
-                    console.warn('⚠️ Tool/context error — retrying without tools...');
-                    responseText = await chatSession.prompt(prompt, { maxTokens: 512 });
-                } else {
-                    throw innerErr;
-                }
-            }
+            const responseText = await chatSession.prompt(prompt, {
+                maxTokens: 256,  // छोटे responses = faster
+            });
             return responseText;
         })();
 
