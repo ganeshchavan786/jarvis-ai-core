@@ -1249,20 +1249,17 @@ async function initJarvisMinds() {
         llama = await getLlama();
 
         console.log("🔄 Loading Qwen-7B model on CPU (this takes 1-2 min)...");
-        model = await llama.loadModel({
-            modelPath: LLM_PATH,
-            gpuLayers: 0,
-        });
+        model = await llama.loadModel({ modelPath: LLM_PATH });
 
         console.log("✅ Model loaded! Creating context...");
         context = await model.createContext({
-            contextSize: 4096,   // 16384 → 4096: 4x faster, enough for normal chat
-            batchSize: 512,      // smaller batch = faster first token
+            contextSize: 8192,
+            batchSize: 512,
         });
 
         chatSession = new LlamaChatSession({
             contextSequence: context.getSequence(),
-            systemPrompt: `You are Jarvis, an AI assistant with tools for coding, memory, and system tasks. Be concise. Use markdown. Tools available: coding(write/read/patch/exec/install/search/delete files), memory(search/remember/recall), agents(spawn/check), system(time/weather/vps/notes).`
+            systemPrompt: `You are Jarvis, a helpful AI assistant. Answer concisely in the same language as the user. Use markdown formatting.`
         });
 
         systemStatus = 'ready';
@@ -1436,16 +1433,32 @@ app.post('/api/jarvis', async (req, res) => {
     try {
         console.log(`💬 User: ${prompt}`);
 
+        // फक्त 18 core tools LLM ला द्या — 58 MCP tools वगळा (ते खूप tokens वापरतात)
+        const coreToolNames = [
+            'get_current_time', 'get_system_status', 'get_live_weather', 'manage_notes',
+            'write_code_file', 'patch_code_file', 'read_code_file', 'delete_file',
+            'list_workspace_files', 'search_in_files', 'install_package',
+            'execute_code_command', 'get_execution_log',
+            'memory_search', 'memory_remember', 'memory_recall',
+            'spawn_sub_agent', 'check_sub_agent'
+        ];
+        const coreTools = Object.fromEntries(
+            Object.entries(allRegisteredTools).filter(([k]) => coreToolNames.includes(k))
+        );
+        console.log(`🛠 Using ${Object.keys(coreTools).length} core tools (MCP tools excluded for speed)`);
+
         const inferencePromise = (async () => {
             let responseText;
             try {
                 responseText = await chatSession.prompt(prompt, {
-                    functions: Object.keys(allRegisteredTools).length > 0 ? allRegisteredTools : undefined,
-                    maxTokens: 512,  // response खूप लांब होणार नाही — faster
+                    functions: Object.keys(coreTools).length > 0 ? coreTools : undefined,
+                    maxTokens: 512,
                 });
             } catch (innerErr) {
-                if (innerErr.message?.includes('model output must contain')) {
-                    console.warn('⚠️ Empty model output with tools — retrying without tools...');
+                if (innerErr.message?.includes('model output must contain') ||
+                    innerErr.message?.includes('context size') ||
+                    innerErr.message?.includes('fits the context')) {
+                    console.warn('⚠️ Tool/context error — retrying without tools...');
                     responseText = await chatSession.prompt(prompt, { maxTokens: 512 });
                 } else {
                     throw innerErr;
