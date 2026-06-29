@@ -745,8 +745,8 @@ export default function JarvisAdvancedUI() {
     await saveMessageToDB(userMsg, activeSessionId);
 
     // ── Timeout: show warning at 30s, abort at 120s ──────────────────────
-    const WARN_MS = 45000;
-    const ABORT_MS = 200000;
+    const WARN_MS = 60000;
+    const ABORT_MS = 420000;
 
     const abortCtrl = new AbortController();
     abortControllerRef.current = abortCtrl;
